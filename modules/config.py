@@ -145,7 +145,7 @@ ACHIEVEMENTS = [
      "icon": "🧪", "category": "bestiary", "hidden": False,
      "progress_key": "total", "progress_target": 731,
      "condition": lambda s: s["total"] >= 731},
-    {"id": "nine_hundred_eighty_four", "name": "984 — Солнцеликий уровень", "desc": "984 двойки суммарно. Аферов бы сказал: «молодец, сынок»",
+    {"id": "nine_hundred_eighty_four", "name": "984 — Монстр из Хеновы", "desc": "Для Гаравито это было только начало...»",
      "icon": "☀️", "category": "bestiary", "hidden": False,
      "progress_key": "total", "progress_target": 984,
      "condition": lambda s: s["total"] >= 984},
