@@ -5,3 +5,7 @@
 /screenshots
 /users.json
 /__pycache__
+
+inferno.db
+inferno.db-shm
+inferno.db-wal

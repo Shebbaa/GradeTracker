@@ -1,0 +1,32 @@
+КФг пустой. Без изменений
+
+{
+  "hotkey": "ctrl+shift+f2",
+  "color_tolerance": 35,
+  "detection_interval_ms": 1500,
+  "zone": null,
+  "target_color_hsv": null,
+  "sound_enabled": true,
+  "overlay_enabled": true,
+  "mercy_duration_sec": 15,
+  "bg_opacity": 85,
+  "widget_opacity": 95,
+  "pixel_threshold": 0.3,
+  "shop_gold": 0,
+  "shop_keys": 0,
+  "shop_purchased_themes": [],
+  "shop_pool": [],
+  "shop_pool_timestamp": 0.0,
+  "shop_last_free_gold": 0.0,
+  "shop_last_free_key": 0.0,
+  "gacha_won_unique": [],
+  "streak_gold_date": ""
+}
+
+
+
+
+
+
+
+

@@ -3707,24 +3707,36 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         return w
 
     def _tab_achievements(self):
-        """Вкладка «Файлы {nickname}» — ачивки с замазанным текстом."""
-        w = QWidget(); l = QVBoxLayout(w)
-        l.setContentsMargins(4, 4, 4, 4); l.setSpacing(4)
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setContentsMargins(4, 4, 4, 4)
+        l.setSpacing(4)
+
+        # Шапка — НЕ скроллится
         self.ach_total_label = QLabel("Файлы: 0/0 (0%)")
         self.ach_total_label.setStyleSheet("color:#ffcc00; font-size:13px; font-weight:bold;")
         l.addWidget(self.ach_total_label)
+
         self.ach_total_bar = QProgressBar()
         self.ach_total_bar.setRange(0, 100)
-        self.ach_total_bar.setFixedHeight(12)
+        self.ach_total_bar.setFixedHeight(10)
+        self.ach_total_bar.setFormat("")
         l.addWidget(self.ach_total_bar)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+
+        # Прокручиваемая область
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
         self.ach_container = QWidget()
+        self.ach_container.setStyleSheet("background:transparent;")
         self.ach_layout = QVBoxLayout(self.ach_container)
-        self.ach_layout.setContentsMargins(2, 2, 2, 2); self.ach_layout.setSpacing(2)
+        self.ach_layout.setContentsMargins(2, 2, 2, 2)
+        self.ach_layout.setSpacing(4)
         scroll.setWidget(self.ach_container)
         l.addWidget(scroll)
-        self._ach_cat_collapsed = {}   # cat_id → bool
-        self._ach_cat_widgets = {}     # cat_id → (btn, container)
+
+        self._ach_cat_collapsed = {}
+        self._ach_cat_widgets = {}
         return w
 
     def _tab_themes(self):
@@ -4489,26 +4501,50 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         return w
 
     def _tab_settings(self):
-        w = QWidget(); l = QVBoxLayout(w); l.setSpacing(8)
-        self.chk_sound = QCheckBox("\U0001f50a Звуки"); self.chk_sound.setChecked(True)
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+
+        inner_w = QWidget()
+        inner_w.setStyleSheet("background:transparent;")
+        l = QVBoxLayout(inner_w)
+        l.setContentsMargins(6, 6, 6, 6)
+        l.setSpacing(8)
+
+        self.chk_sound = QCheckBox("\U0001f50a Звуки")
+        self.chk_sound.setChecked(True)
         l.addWidget(self.chk_sound)
-        self.chk_overlay = QCheckBox("\U0001f386 Оверлеи"); self.chk_overlay.setChecked(True)
+
+        self.chk_overlay = QCheckBox("\U0001f386 Оверлеи")
+        self.chk_overlay.setChecked(True)
         l.addWidget(self.chk_overlay)
+
         l.addWidget(QLabel("Прозрачность фона:"))
         self.sl_bg = QSlider(Qt.Orientation.Horizontal)
-        self.sl_bg.setRange(20, 100); self.sl_bg.setValue(self._bg_opacity)
+        self.sl_bg.setRange(20, 100)
+        self.sl_bg.setValue(self._bg_opacity)
         self.sl_bg.valueChanged.connect(self._on_bg_opacity)
         l.addWidget(self.sl_bg)
+
         l.addWidget(QLabel("Прозрачность элементов:"))
         self.sl_wg = QSlider(Qt.Orientation.Horizontal)
-        self.sl_wg.setRange(30, 100); self.sl_wg.setValue(self._widget_opacity)
+        self.sl_wg.setRange(30, 100)
+        self.sl_wg.setValue(self._widget_opacity)
         self.sl_wg.valueChanged.connect(self._on_wg_opacity)
         l.addWidget(self.sl_wg)
+
         l.addWidget(QLabel("Прозрачность эффектов фона:"))
         self.sl_fx = QSlider(Qt.Orientation.Horizontal)
-        self.sl_fx.setRange(0, 100); self.sl_fx.setValue(self._fx_opacity)
+        self.sl_fx.setRange(0, 100)
+        self.sl_fx.setValue(self._fx_opacity)
         self.sl_fx.valueChanged.connect(self._on_fx_opacity)
         l.addWidget(self.sl_fx)
+
         l.addWidget(QLabel("Порог срабатывания (%):"))
         thr_row = QHBoxLayout()
         self.sl_threshold = QSlider(Qt.Orientation.Horizontal)
@@ -4520,17 +4556,39 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self.thr_label.setFixedWidth(55)
         thr_row.addWidget(self.thr_label)
         l.addLayout(thr_row)
-        self.btn_show_zone = QPushButton("\U0001f441 Показать/скрыть зону")
+
+        # ── Показать зону — крупная заметная кнопка ──
+        sep0 = QFrame()
+        sep0.setFixedHeight(1)
+        sep0.setStyleSheet("background:#553311;")
+        l.addWidget(sep0)
+
+        self.btn_show_zone = QPushButton("\U0001f441  Показать / скрыть зону выборки")
+        self.btn_show_zone.setFixedHeight(44)
+        self.btn_show_zone.setStyleSheet(
+            "QPushButton{background:rgba(40,20,5,220);border:2px solid #886622;"
+            "border-radius:7px;color:#ffcc44;font-size:13px;font-weight:bold;padding:8px 12px;}"
+            "QPushButton:hover{background:rgba(60,30,8,240);border-color:#ffaa22;color:#ffdd66;}"
+        )
         self.btn_show_zone.clicked.connect(self.request_show_zone)
         l.addWidget(self.btn_show_zone)
 
-        # ── Кнопки: Лог и Коды ──
-        sep = QFrame(); sep.setFixedHeight(1)
-        sep.setStyleSheet("background:#333;")
-        l.addWidget(sep)
+        info = QLabel("Ctrl+Shift+F2 — показать/скрыть\nF12 — экстренный стоп\nПри закрытии — свернуть в трей")
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#555; font-size:10px; padding:4px 0;")
+        l.addWidget(info)
+
+        l.addStretch(1)
+
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background:#333;")
+        l.addWidget(sep2)
+
         extras_label = QLabel("Дополнительно:")
         extras_label.setStyleSheet("color:#888; font-size:11px; font-weight:bold; padding-top:4px;")
         l.addWidget(extras_label)
+
         BTN_EXTRA_STYLE = (
             "QPushButton{background:rgba(20,8,5,200);border:1px solid #553322;"
             "border-radius:6px;color:#cc8844;font-size:13px;font-weight:bold;padding:10px;}"
@@ -4538,24 +4596,20 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         )
         btn_log = QPushButton("\U0001f4cb  Открыть лог")
         btn_log.setStyleSheet(BTN_EXTRA_STYLE)
-        btn_log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn_log.setMinimumHeight(44)
-        btn_log.setMinimumWidth(220)
         btn_log.clicked.connect(self._open_log_window)
         l.addWidget(btn_log)
+
         btn_codes = QPushButton("\U0001f511  Секретные коды")
         btn_codes.setStyleSheet(BTN_EXTRA_STYLE)
-        btn_codes.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         btn_codes.setMinimumHeight(44)
-        btn_codes.setMinimumWidth(220)
         btn_codes.clicked.connect(self._open_codes_window)
         l.addWidget(btn_codes)
 
-        info = QLabel("Ctrl+Shift+F2 \u2014 показать/скрыть\nF12 \u2014 экстренный стоп\nПри закрытии \u2014 трей")
-        info.setWordWrap(True)
-        info.setStyleSheet("color:#555; font-size:10px; padding:6px;")
-        l.addWidget(info)
-        l.addStretch()
+        l.addSpacing(8)
+
+        scroll.setWidget(inner_w)
+        outer.addWidget(scroll)
         return w
 
     def _tab_goals(self):
@@ -5109,8 +5163,8 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             cid = cat_id
             cat_btn.clicked.connect(lambda checked, c=cid: self._toggle_ach_category(c))
 
-            row_layout = None
-            for i, ach in enumerate(cat_achs):
+
+            for ach in cat_achs:
                 is_unlocked = ach["id"] in unlocked_ids
                 tier = ach.get("tier", "")
 
@@ -5201,15 +5255,8 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     f.setStyleSheet("QFrame{background:rgba(10,3,3,150);border:1px solid #333;border-radius:5px;}")
                     nm.setStyleSheet("color:#777;")
 
-                if i % 2 == 0:
-                    row_layout = QHBoxLayout()
-                    row_layout.setSpacing(4)
-                    cat_lay.addLayout(row_layout)
-                row_layout.addWidget(f)
 
-                # If last item and odd count, add stretch
-                if i == len(cat_achs) - 1 and i % 2 == 0:
-                    row_layout.addStretch()
+                cat_lay.addWidget(f)
 
             self.ach_layout.addWidget(cat_container)
 

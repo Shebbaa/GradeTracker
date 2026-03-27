@@ -15,8 +15,8 @@ POOL_REFRESH_SECONDS = 2 * 60 * 60          # 2 hours
 FREE_GOLD_COOLDOWN   = 15 * 60              # 15 minutes
 FREE_KEY_COOLDOWN    = 24 * 60 * 60         # 24 hours
 
-DEFAULT_GOLD = 0
-DEFAULT_KEYS = 0
+DEFAULT_GOLD = 99999
+DEFAULT_KEYS = 99
 
 # All classic themes EXCEPT classic_candy (15 total)
 CLASSIC_CANDIDATES = [
