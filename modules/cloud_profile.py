@@ -43,6 +43,9 @@ def normalize_fio_key(s: str) -> str:
 SEEDED_ADMIN_FIO = "Аферов Андрей Алексеевич"
 SEEDED_ADMIN_NICKNAME = "Аферова"
 
+# Длительность режима наказания за накрутку (синхронизировать с login_sync / UI)
+CHEATER_PUNISHMENT_MINUTES = 10
+
 
 class CloudProfileService:
     """Обёртка над PostgREST Supabase для profiles."""
@@ -100,6 +103,7 @@ class CloudProfileService:
             "title": title,
             "is_cheater": False,
             "cheater_until": None,
+            "is_admin": False,
         }
         self._client.table("profiles").insert(payload).execute()
         return payload
@@ -114,6 +118,8 @@ class CloudProfileService:
         title: str | None = None,
         is_cheater: bool | None = None,
         cheater_until: str | None = None,
+        cheat_local_snapshot: Any = None,
+        legit_cloud_snapshot: Any = None,
     ) -> None:
         patch: dict[str, Any] = {}
         if gold is not None:
@@ -128,18 +134,37 @@ class CloudProfileService:
             patch["is_cheater"] = bool(is_cheater)
         if cheater_until is not None:
             patch["cheater_until"] = cheater_until
+        if cheat_local_snapshot is not None:
+            patch["cheat_local_snapshot"] = cheat_local_snapshot
+        if legit_cloud_snapshot is not None:
+            patch["legit_cloud_snapshot"] = legit_cloud_snapshot
         if not patch:
             return
         self._client.table("profiles").update(patch).eq("id", profile_id).execute()
 
-    def mark_cheater_five_minutes(self, profile_id: str) -> dict[str, Any]:
-        until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    def mark_cheater_punishment(
+        self,
+        profile_id: str,
+        *,
+        local_snapshot: dict[str, Any] | None = None,
+        cloud_legit_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        until = datetime.now(timezone.utc) + timedelta(minutes=CHEATER_PUNISHMENT_MINUTES)
         iso = until.isoformat()
-        self.update_progress(
-            profile_id, is_cheater=True, cheater_until=iso
-        )
+        patch: dict[str, Any] = {"is_cheater": True, "cheater_until": iso}
+        if local_snapshot is not None:
+            patch["cheat_local_snapshot"] = local_snapshot
+        if cloud_legit_snapshot is not None:
+            patch["legit_cloud_snapshot"] = cloud_legit_snapshot
+        self._client.table("profiles").update(patch).eq("id", profile_id).execute()
         row = self.fetch_by_id(profile_id)
-        return row or {"id": profile_id, "is_cheater": True, "cheater_until": iso}
+        return row or {"id": profile_id, **patch}
+
+    def finalize_cheater_punishment(self, profile_id: str) -> None:
+        """После истечения таймера: снять флаги наказания в облаке."""
+        self._client.table("profiles").update(
+            {"is_cheater": False, "cheater_until": None}
+        ).eq("id", profile_id).execute()
 
     def fetch_by_id(self, profile_id: str) -> dict[str, Any] | None:
         rows = (
@@ -155,7 +180,8 @@ class CloudProfileService:
     def fetch_leaderboard(self, limit: int = 50) -> list[dict[str, Any]]:
         q = (
             self._client.table("profiles")
-            .select("nickname,fio,total_fives,title")
+            .select("fio,total_fives,title")
+            .eq("is_admin", False)
             .order("total_fives", desc=True)
             .limit(limit)
         )
@@ -181,5 +207,7 @@ class CloudProfileService:
             "title": title,
             "is_cheater": False,
             "cheater_until": None,
+            "cheat_local_snapshot": None,
+            "legit_cloud_snapshot": None,
         }
         self._client.table("profiles").update(patch).eq("id", profile_id).execute()

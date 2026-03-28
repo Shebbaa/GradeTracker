@@ -1120,9 +1120,36 @@ THEMES = [
             "ember_colors": [(255, 0, 255), (0, 255, 0), (255, 128, 0), (0, 128, 255)],
         },
     },
+    # Награда после отбытия 10-минутного «клоунского» наказания (скрытая, выдаётся автоматически)
+    {
+        "id": "clown_redemption",
+        "category": "satirical",
+        "name": "Цирк остыл 🤡✨",
+        "desc": "Тема за честное отбытие наказания за накрутку.",
+        "unlock": "hidden",
+        "fire_scale": 0.92,
+        "bg_particles": "gold_dust",
+        "counter_font": "Comic Sans MS",
+        "counter_font_scale": 1.0,
+        "colors": {
+            "primary": "#ffccff",
+            "secondary": "#88ffff",
+            "accent": "#ffaa66",
+            "glow": "#ff66aa",
+            "bg_top": (60, 30, 80),
+            "bg_mid": (40, 20, 55),
+            "bg_bot": (90, 50, 30),
+            "border": "#ffaa00",
+            "fire_core": (255, 120, 200),
+            "fire_mid": (180, 100, 255),
+            "fire_tip": (255, 220, 150),
+            "ember_colors": [(255, 150, 220), (200, 100, 255), (255, 200, 100), (150, 255, 255)],
+        },
+    },
 ]
 
 CHEATER_THEME_ID = "cheater_clown"
+CLOWN_REDEMPTION_THEME_ID = "clown_redemption"
 
 DEFAULT_THEME_ID = "ultra_default"
 

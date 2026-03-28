@@ -9,6 +9,8 @@ Inferno Grade Tracker — UI (v7 COMPACT 4K + Auth + Themes + Punishments)
 import math
 import random
 import time
+import uuid
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QGridLayout, QScrollArea, QFrame,
@@ -24,11 +26,13 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QFont, QColor, QPainter, QPalette, QLinearGradient,
     QRadialGradient, QPen, QBrush, QPixmap, QPolygonF, QTransform,
+    QImage,
 )
 from modules.config import (
     get_rank, get_rank_progress, MOTIVATIONAL_QUOTES,
-    ACHIEVEMENTS, CATEGORY_NAMES, DEFAULT_CONFIG,
+    ACHIEVEMENTS, CATEGORY_NAMES, DEFAULT_CONFIG, BASE_DIR, save_config,
 )
+from modules.login_sync import cheater_seconds_remaining
 from modules.themes import (
     THEMES, DEFAULT_THEME_ID, CHEATER_THEME_ID, get_theme_by_id, get_unlocked_themes,
     get_themes_by_category, THEME_CATEGORIES,
@@ -51,6 +55,59 @@ FONT_FAMILY_DISPLAY = "'Impact', 'Arial Black', 'Segoe UI Black', sans-serif"
 
 # Символ замазки для описаний ачивок
 CENSOR_CHAR = "\u2588"  # █ — полный блок
+
+
+class FloatingStickerWindow(QWidget):
+    """Плавающий стикер поверх экрана; перетащить в зону кодов — закрыть."""
+
+    def __init__(self, panel: "DictatorControlPanel", pixmap: QPixmap, meta: dict):
+        super().__init__(None)
+        self._panel = panel
+        self._meta = meta
+        self._pm = pixmap
+        self._drag_anchor = None
+        self._press_global = None
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(pixmap.size())
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._pm)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_anchor = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press_global = e.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, e):
+        if self._drag_anchor is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+            self.move(e.globalPosition().toPoint() - self._drag_anchor)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drag_anchor = None
+        if self._panel._floating_sticker_global_point_in_codes_zone(self.frameGeometry().center()):
+            self._panel._remove_floating_sticker_by_id(self._meta.get("id"))
+            self.hide()
+            self.deleteLater()
+            if self in getattr(self._panel, "_floating_sticker_windows", []):
+                self._panel._floating_sticker_windows.remove(self)
+            return
+        self._panel._update_floating_sticker_pos(self._meta.get("id"), self.x(), self.y())
+        if self._press_global is not None:
+            dist = (e.globalPosition().toPoint() - self._press_global).manhattanLength()
+            pg = self._press_global
+            self._press_global = None
+            if dist < 12 and self._meta.get("action") == "modern_windows":
+                self._panel._floating_sticker_activate_modern_windows()
+                self._panel._emoji_boom_at(pg.x(), pg.y(), 20)
 
 
 def censor_text(text: str, ratio: float = 0.35) -> str:
@@ -1053,9 +1110,8 @@ class DictatorControlPanel(QMainWindow):
         self.config = config
         self._cloud_service = cloud_service
         self._cheater_theme_locked = False
-        from modules.config import save_config
-        self.shop = ShopManager(config, save_config)
-        self.daily_quests = DailyQuestManager(self.config, self.stats, save_config)
+        self.shop = ShopManager(config, self._persist_config)
+        self.daily_quests = DailyQuestManager(self.config, self.stats, self._persist_config)
         self._user_nickname = "???"  # заполняется после авторизации
         self._user_fio = ""
         self._profile_id = None
@@ -1080,6 +1136,7 @@ class DictatorControlPanel(QMainWindow):
         self.punishments = PunishmentEngine()
         self._active_punishment_overlay = None
         self._known_unlocked_themes = set()  # для отслеживания новых разблокировок тем
+        self._floating_sticker_windows = []
         # Гейтинг (дозированное открытие контента)
         self._content_gate_prev = {"stats": False, "shop": False, "themes": False}
         self._content_gate_prev = dict(self._content_gate_prev)
@@ -1122,6 +1179,7 @@ class DictatorControlPanel(QMainWindow):
         self._update_theme_effects()
         self._apply_btn_images()
         self._start_timers()
+        QTimer.singleShot(500, self._restore_floating_stickers)
 
     def show(self):
         """Показывает панель по центру экрана."""
@@ -1132,6 +1190,27 @@ class DictatorControlPanel(QMainWindow):
             x = (sg.width() - self.width()) // 2 + sg.x()
             y = (sg.height() - self.height()) // 2 + sg.y()
             self.move(x, y)
+
+    def _persist_config(self, cfg):
+        """Сохранение config + синхронизация кошелька (gold/keys) в Supabase."""
+        from modules.config import save_config
+
+        save_config(cfg)
+        self._push_currency_to_cloud()
+
+    def _push_currency_to_cloud(self):
+        svc = self._cloud_service
+        pid = self._profile_id
+        if not svc or not getattr(svc, "available", False) or not pid:
+            return
+        try:
+            svc.update_progress(
+                pid,
+                gold=int(self.config.get("shop_gold", 0)),
+                keys=int(self.config.get("shop_keys", 0)),
+            )
+        except Exception as e:
+            print(f"[CLOUD] wallet sync: {e}")
 
     def set_user(self, fio: str, nickname: str, profile_id: str | None = None):
         """Устанавливает пользователя после авторизации."""
@@ -1154,6 +1233,40 @@ class DictatorControlPanel(QMainWindow):
         else:
             tid = self.config.get("theme_id", DEFAULT_THEME_ID)
             self._select_theme(tid)
+
+    def refresh_cheater_banner_profile(self, profile: dict | None):
+        """Обновить ссылку на профиль для таймера (без сброса интервала)."""
+        self._cheater_profile_for_banner = profile
+
+    def set_cheater_punishment_banner(self, active: bool, profile: dict | None):
+        """Баннер-таймер режима наказания за накрутку."""
+        if not getattr(self, "_cheater_banner", None):
+            return
+        self._cheater_profile_for_banner = profile
+        if not active:
+            self._cheater_banner.setVisible(False)
+            self._cheater_banner_timer.stop()
+            return
+        self._cheater_banner.setVisible(True)
+        self._cheater_banner_timer.start(1000)
+        self._tick_cheater_banner()
+
+    def _tick_cheater_banner(self):
+        from modules.cloud_profile import CHEATER_PUNISHMENT_MINUTES
+
+        p = self._cheater_profile_for_banner
+        if not p or not self._cheater_banner.isVisible():
+            return
+        left = cheater_seconds_remaining(p)
+        if left is None:
+            self._cheater_banner.setText(
+                f"{CHEATER_PUNISHMENT_MINUTES} минут наказания за накрутку!"
+            )
+            return
+        m, s = divmod(left, 60)
+        self._cheater_banner.setText(
+            f"{CHEATER_PUNISHMENT_MINUTES} минут наказания за накрутку! Осталось: {m:02d}:{s:02d}"
+        )
 
     # ── Drag ──────────────────────────────────────────────────
     def mousePressEvent(self, e):
@@ -3383,6 +3496,19 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         hdr.addWidget(bc)
         ml.addLayout(hdr)
 
+        self._cheater_banner = QLabel("")
+        self._cheater_banner.setVisible(False)
+        self._cheater_banner.setWordWrap(True)
+        self._cheater_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cheater_banner.setStyleSheet(
+            "color:#ff66cc; font-size:12px; font-weight:bold; padding:8px; "
+            "background:rgba(60,0,50,220); border-radius:10px; border:1px solid #ff00aa;"
+        )
+        ml.addWidget(self._cheater_banner)
+        self._cheater_banner_timer = QTimer(self)
+        self._cheater_banner_timer.timeout.connect(self._tick_cheater_banner)
+        self._cheater_profile_for_banner = None
+
         # ─── Центральный счётчик (в контейнере фикс. размера чтобы jitter не сдвигал layout) ──
         self._counter_container = QWidget()
         self._counter_container.setStyleSheet("background:transparent;")
@@ -4134,7 +4260,9 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
 
     def _tab_codes(self):
         """Вкладка ввода секретных кодов."""
-        w = QWidget(); lay = QVBoxLayout(w)
+        w = QWidget()
+        self._codes_tab_widget = w
+        lay = QVBoxLayout(w)
         lay.setContentsMargins(10, 20, 10, 10)
         icon = QLabel("\U0001f511")
         icon.setFont(QFont("Segoe UI", 36))
@@ -4167,8 +4295,6 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self._code_result.setWordWrap(True)
         lay.addWidget(self._code_result)
         lay.addStretch()
-        # Restore saved stickers
-        QTimer.singleShot(200, self._restore_stickers)
         return w
 
     def _on_code_submit(self):
@@ -4352,27 +4478,15 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         """Наклейка MSN bage — обёртка над универсальным _spawn_sticker."""
         self._spawn_sticker("bage.png", remove_bg="white", action="modern_windows")
 
-    def _spawn_sticker(self, image_file, remove_bg=None, action=None):
-        """Spawn a sticker inside the codes window only.
-        Stickers do NOT persist between sessions.
-        remove_bg: "white"/"black"/"oval"/None
-        action: callback on click, or None
-        """
-        import os, random
-        from PyQt6.QtGui import QTransform, QImage
+    def _build_sticker_pixmap(self, image_file, remove_bg=None):
+        """QPixmap наклейки из assets или None."""
+        from PyQt6.QtGui import QPainterPath, QTransform
 
-        # Стикеры появляются только в окне кодов
-        if not hasattr(self, '_codes_window') or not self._codes_window or not self._codes_window.isVisible():
-            return
-
-        base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
-        img_path = os.path.join(base, image_file)
-        img = QImage(img_path)
+        img_path = Path(BASE_DIR) / "assets" / image_file
+        img = QImage(str(img_path))
         if img.isNull():
-            return
-
+            return None
         img = img.convertToFormat(QImage.Format.Format_ARGB32)
-
         if remove_bg == "white":
             for y in range(img.height()):
                 for x in range(img.width()):
@@ -4386,7 +4500,6 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     if c.red() < 35 and c.green() < 35 and c.blue() < 35:
                         img.setPixelColor(x, y, QColor(0, 0, 0, 0))
         elif remove_bg == "oval":
-            from PyQt6.QtGui import QPainterPath
             w, h = img.width(), img.height()
             mask = QImage(w, h, QImage.Format.Format_ARGB32)
             mask.fill(QColor(0, 0, 0, 0))
@@ -4398,48 +4511,111 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             mp.drawImage(0, 0, img)
             mp.end()
             img = mask
-
         pm = QPixmap.fromImage(img)
-
-        # Размер наклейки 140-210px (x2 от раньше)
         scale = random.uniform(1.0, 1.5)
         sz = int(140 * scale)
         pm = pm.scaled(sz, sz, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-
-        # Random rotation -20..20°
         angle = random.uniform(-20, 20)
         pm = pm.transformed(QTransform().rotate(angle), Qt.TransformationMode.SmoothTransformation)
+        return pm
 
-        # Track sticker count (for achievements, не персистим сами стикеры)
-        sticker_count = len(getattr(self, '_active_stickers', []))
-        self.config["_sticker_count"] = sticker_count + 1
+    def _codes_drop_zones_global(self):
+        zones = []
+        tw = getattr(self, "_codes_tab_widget", None)
+        if tw is not None:
+            zones.append(
+                QRect(tw.mapToGlobal(QPoint(0, 0)), QSize(max(1, tw.width()), max(1, tw.height())))
+            )
+        cw = getattr(self, "_codes_window", None)
+        if cw is not None and cw.isVisible():
+            zones.append(cw.frameGeometry())
+        return zones
 
-        # Спавн стикера в окне кодов
-        parent = self._codes_window
-        sticker = QLabel(parent)
-        sticker.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        sticker.setPixmap(pm)
-        sticker.setFixedSize(pm.width(), pm.height())
-        sticker.setStyleSheet("background:transparent; border:none;")
-        sticker.setCursor(Qt.CursorShape.PointingHandCursor)
+    def _floating_sticker_global_point_in_codes_zone(self, pt: QPoint) -> bool:
+        for r in self._codes_drop_zones_global():
+            if r.contains(pt):
+                return True
+        return False
 
-        # Random position inside codes window
-        max_x = max(10, parent.width() - pm.width() - 10)
-        max_y = max(200, parent.height() - pm.height() - 10)
-        rx = random.randint(10, max_x)
-        ry = random.randint(150, max_y)
-        sticker.move(rx, ry)
-        sticker.show()
-        sticker.raise_()
+    def _floating_sticker_default_global_pos(self, w: int, h: int) -> tuple[int, int]:
+        ref = getattr(self, "_codes_window", None)
+        if ref is not None and ref.isVisible():
+            g = ref.frameGeometry()
+        elif getattr(self, "_codes_tab_widget", None) is not None:
+            tw = self._codes_tab_widget
+            g = QRect(tw.mapToGlobal(QPoint(0, 0)), QSize(max(1, tw.width()), max(1, tw.height())))
+        else:
+            g = self.frameGeometry()
+        c = g.center()
+        return c.x() - w // 2, c.y() - h // 2
 
-        # Default action for bage: open modern_windows
-        if image_file == "bage.png" or action == "modern_windows":
-            sticker.mousePressEvent = lambda ev: self._on_bage_click(sticker)
+    def _update_floating_sticker_pos(self, sid, x: int, y: int):
+        for entry in self.config.get("floating_stickers") or []:
+            if entry.get("id") == sid:
+                entry["x"] = int(x)
+                entry["y"] = int(y)
+                save_config(self.config)
+                return
 
-        # Store reference
-        if not hasattr(self, '_active_stickers'):
-            self._active_stickers = []
-        self._active_stickers.append(sticker)
+    def _remove_floating_sticker_by_id(self, sid):
+        if not sid:
+            return
+        lst = self.config.get("floating_stickers") or []
+        self.config["floating_stickers"] = [e for e in lst if e.get("id") != sid]
+        save_config(self.config)
+
+    def _floating_sticker_activate_modern_windows(self):
+        purchased = self.config.setdefault("shop_purchased_themes", [])
+        if "modern_windows" not in purchased:
+            purchased.append("modern_windows")
+        save_config(self.config)
+        self._select_theme("modern_windows")
+        self._refresh_themes()
+
+    def close_all_floating_stickers(self):
+        for w in list(self._floating_sticker_windows):
+            try:
+                w.hide()
+                w.deleteLater()
+            except Exception:
+                pass
+        self._floating_sticker_windows.clear()
+
+    def _restore_floating_stickers(self):
+        for rec in list(self.config.get("floating_stickers") or []):
+            pm = self._build_sticker_pixmap(rec.get("file"), rec.get("remove_bg"))
+            if pm is None or pm.isNull():
+                continue
+            sid = rec.get("id") or str(uuid.uuid4())
+            rec["id"] = sid
+            meta = {
+                "id": sid,
+                "file": rec.get("file"),
+                "remove_bg": rec.get("remove_bg"),
+                "action": rec.get("action"),
+            }
+            win = FloatingStickerWindow(self, pm, meta)
+            win.move(int(rec.get("x", 120)), int(rec.get("y", 120)))
+            win.show()
+            self._floating_sticker_windows.append(win)
+        save_config(self.config)
+
+    def _spawn_sticker(self, image_file, remove_bg=None, action=None):
+        """Плавающий стикер (сохраняется в config); перетащить в зону кодов — убрать."""
+        pm = self._build_sticker_pixmap(image_file, remove_bg)
+        if pm is None or pm.isNull():
+            return
+        sid = str(uuid.uuid4())
+        meta = {"id": sid, "file": image_file, "remove_bg": remove_bg, "action": action}
+        x, y = self._floating_sticker_default_global_pos(pm.width(), pm.height())
+        win = FloatingStickerWindow(self, pm, meta)
+        win.move(x, y)
+        win.show()
+        self._floating_sticker_windows.append(win)
+        lst = self.config.setdefault("floating_stickers", [])
+        lst.append({**meta, "x": x, "y": y})
+        self.config["_sticker_count"] = len(self._floating_sticker_windows)
+        save_config(self.config)
 
     def _animate_currency_add(self, amount, currency_type="gold"):
         """Animate currency addition with floating text and counter increment."""
@@ -4502,16 +4678,11 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         timer.timeout.connect(tick)
         timer.start()
 
-    def _on_bage_click(self, sticker):
-        """Клик по наклейке — открыть современную тему."""
-        purchased = self.config.setdefault("shop_purchased_themes", [])
-        if "modern_windows" not in purchased:
-            purchased.append("modern_windows")
-            from modules.config import save_config
-            save_config(self.config)
-        self._select_theme("modern_windows")
-        self._emoji_boom_from_widget(sticker, 20)
-        self._refresh_themes()
+    def _on_bage_click(self, sticker=None):
+        """Клик по наклейке bage (legacy) — открыть современную тему."""
+        self._floating_sticker_activate_modern_windows()
+        if sticker is not None:
+            self._emoji_boom_from_widget(sticker, 20)
 
     def _tab_log(self):
         w = QWidget(); l = QVBoxLayout(w)
@@ -4662,9 +4833,10 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             self,
             "Очистка прогресса",
             "Удалить весь игровой прогресс на этом ПК и синхронизировать сброс с облаком?\n\n"
-            "Останутся: ФИО и никнейм в базе, купленные темы, настройки зоны, цвета и хоткеи.\n\n"
+            "Останутся: ФИО и никнейм в базе, настройки зоны, цвета и хоткеи.\n\n"
             "Будут обнулены: счётчик двоек, ачивки, стрик, помилования, дневники, секретные коды в конфиге, "
-            "квесты, золото и ключи (к стартовым значениям магазина).",
+            "квесты, золото и ключи (к стартовым значениям магазина), купленные темы и текущая тема "
+            "(сброс к стартовой), плавающие стикеры.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

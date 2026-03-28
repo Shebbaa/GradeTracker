@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -63,12 +64,20 @@ class LeaderboardTab(QWidget):
         vl.addLayout(hl)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["#", "Ник / ФИО", "Двоек", "Титул"])
+        self.table.setHorizontalHeaderLabels(["#", "ФИО", "Двоек", "Титул"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet(
+            "QTableWidget { background-color: #1a0c0c; color: #f0dede; gridline-color: #442222; "
+            "alternate-background-color: #2a1515; selection-background-color: #553030; "
+            "selection-color: #fff8f8; }"
+            "QTableCornerButton::section { background: #2a1515; }"
+            "QHeaderView::section { background-color: #301010; color: #ffcccc; padding: 4px; "
+            "border: 1px solid #553333; font-weight: bold; }"
+        )
         vl.addWidget(self.table)
 
         self.status = QLabel("")
@@ -89,24 +98,24 @@ class LeaderboardTab(QWidget):
         self._worker.start()
 
     def _on_rows(self, rows: list):
+        fg = QBrush(QColor("#f0dede"))
         self.table.setRowCount(0)
         for i, row in enumerate(rows):
             self.table.insertRow(i)
-            nick = row.get("nickname") or "—"
-            fio = row.get("fio") or ""
-            cell_name = f"{nick}\n{fio}" if fio else nick
+            fio = (row.get("fio") or "").strip() or "—"
             twos = int(row.get("total_fives") or 0)
             tit = _display_title(row)
 
             it0 = QTableWidgetItem(str(i + 1))
             it0.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            it1 = QTableWidgetItem(cell_name)
+            it1 = QTableWidgetItem(fio)
             it2 = QTableWidgetItem(str(twos))
             it2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             it3 = QTableWidgetItem(tit)
 
             for it in (it0, it1, it2, it3):
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                it.setForeground(fg)
 
             self.table.setItem(i, 0, it0)
             self.table.setItem(i, 1, it1)

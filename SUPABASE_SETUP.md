@@ -23,16 +23,49 @@ create table if not exists public.profiles (
   nickname text not null,
   gold int not null default 0,
   keys int not null default 0,
+  -- счётчик двоек (историческое имя колонки total_fives сохраняем для совместимости)
   total_fives int not null default 0,
   title text not null default '',
   is_cheater boolean not null default false,
-  cheater_until timestamptz null
+  cheater_until timestamptz null,
+  -- снимок «накрученного» локального состояния на момент флага читера (аудит / отладка)
+  cheat_local_snapshot jsonb null,
+  -- последние доверенные значения из облака на момент наказания
+  legit_cloud_snapshot jsonb null,
+  -- скрыть строку из публичного лидерборда (админ / тестовый аккаунт)
+  is_admin boolean not null default false
 );
 
 create index if not exists profiles_total_fives_idx
   on public.profiles (total_fives desc);
 
 alter table public.profiles enable row level security;
+```
+
+Если таблица уже создана без JSON-полей, добавьте столбцы:
+
+```sql
+alter table public.profiles
+  add column if not exists cheat_local_snapshot jsonb null;
+alter table public.profiles
+  add column if not exists legit_cloud_snapshot jsonb null;
+alter table public.profiles
+  add column if not exists is_admin boolean not null default false;
+```
+
+Чтобы скрыть аккаунт из топа (например свой админский), в Table Editor или SQL:
+
+```sql
+update public.profiles set is_admin = true where fio_key = 'ваш нормализованный fio_key';
+```
+
+У **новых** строк без миграции колонки вставка из приложения может вернуть ошибку — сначала выполните `add column ... is_admin` выше.
+
+Опционально — человекочитаемый синоним в SQL (не обязателен для приложения):
+
+```sql
+-- Псевдоним в запросах: total_twos AS total_fives
+-- Приложение по-прежнему читает/пишет total_fives.
 ```
 
 ## 3. Политики RLS (минимум для проверки)

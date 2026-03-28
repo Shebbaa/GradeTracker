@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 os.environ.setdefault("QT_SCALE_FACTOR", "1.0")
 
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont
 
@@ -26,9 +26,12 @@ from modules.config import (
     REACTIONS_SINGLE,
     REACTIONS_COMBO,
     REACTIONS_MASS,
+    CLOWN_MODE_REACTIONS_SINGLE,
+    CLOWN_MODE_REACTIONS_COMBO,
+    CLOWN_MODE_REACTIONS_MASS,
     COMBO_WINDOW_SEC,
 )
-from modules.cloud_profile import get_supabase_client, CloudProfileService
+from modules.cloud_profile import get_supabase_client, CloudProfileService, CHEATER_PUNISHMENT_MINUTES
 from modules.login_sync import perform_handshake, cheater_period_active
 from modules.stats_manager import StatsManager
 from modules.detector import GradeDetector
@@ -106,10 +109,13 @@ class InfernoApp:
         self._cheater_watch_timer.timeout.connect(self._refresh_cheater_state)
         self._cheater_watch_timer.start(4000)
 
-        # Папки для режима клоуна (можно положить мемы/звуки отдельно)
+        # Ассеты наказания: clown_mods (гиф/картинки + mp3 в sounds/) и legacy cheater_mod
         for sub in ("memes", "custom_teacher", "sounds"):
             p = BASE_DIR / "assets" / "cheater_mod" / sub
             p.mkdir(parents=True, exist_ok=True)
+        _cm = BASE_DIR / "assets" / "clown_mods"
+        _cm.mkdir(parents=True, exist_ok=True)
+        (_cm / "sounds").mkdir(parents=True, exist_ok=True)
 
     def _login_snapshot(self):
         rn, _ = get_rank(self.stats.total)
@@ -142,17 +148,26 @@ class InfernoApp:
                 print(f"[SYNC] {sync.message}")
             elif sync.pulled_from_cloud:
                 print("[SYNC] Локальные данные обновлены из облака.")
-        self.panel.set_user(fio, nickname, profile.get("id"))
+        self.panel.set_user(fio, nickname, self._profile.get("id"))
         self.panel.show()
         self.panel.refresh_all()
         self._authed = True
         self._refresh_cheater_state()
+        if cheater_period_active(self._profile):
+            msg = (
+                f"НАКРУТКА - ГРЕХ. ТЫ НАКАЗАН НА {CHEATER_PUNISHMENT_MINUTES} МИНУТ."
+            )
+            QTimer.singleShot(
+                250,
+                lambda: QMessageBox.warning(self.panel, "Накрутка", msg),
+            )
 
     def _perform_account_wipe(self):
         """Сброс прогресса: локально + в Supabase (без удаления ФИО/ника)."""
         from modules.account_reset import clear_config_account_progress
 
         clear_config_account_progress(self.config)
+        self.panel.close_all_floating_stickers()
         self.stats.wipe_all_progress()
         self.panel.punishments.reset()
         save_config(self.config)
@@ -194,9 +209,14 @@ class InfernoApp:
         if active and not self._cheater_ui_on:
             self._cheater_ui_on = True
             self._apply_cheater_mode()
+            self.panel.set_cheater_punishment_banner(True, self._profile)
         elif not active and self._cheater_ui_on:
             self._cheater_ui_on = False
+            self._complete_cheater_punishment()
             self._clear_cheater_mode()
+            self.panel.set_cheater_punishment_banner(False, None)
+        elif active and self._cheater_ui_on:
+            self.panel.refresh_cheater_banner_profile(self._profile)
 
     def _apply_cheater_mode(self):
         from modules.themes import get_theme_by_id, CHEATER_THEME_ID
@@ -204,11 +224,37 @@ class InfernoApp:
         clown = get_theme_by_id(CHEATER_THEME_ID)
         if not clown:
             return
-        root = BASE_DIR / "assets" / "cheater_mod"
-        self.memes.set_asset_roots(root / "memes", root / "custom_teacher")
-        self.sounds.set_sounds_root(root / "sounds")
+        root = BASE_DIR / "assets" / "clown_mods"
+        self.memes.set_asset_roots(root, root)
+        if self.memes.meme_count == 0:
+            leg = BASE_DIR / "assets" / "cheater_mod"
+            self.memes.set_asset_roots(leg / "memes", leg / "custom_teacher")
+        snd = root / "sounds" if (root / "sounds").exists() else root
+        self.sounds.set_sounds_root(snd)
+        if self.sounds.sound_count == 0:
+            self.sounds.set_sounds_root(BASE_DIR / "assets" / "cheater_mod" / "sounds")
+        if self.sounds.sound_count == 0:
+            self.sounds.set_sounds_root(None)
         self.panel.set_cheater_theme_locked(True)
         self.overlay.set_theme(clown)
+
+    def _complete_cheater_punishment(self):
+        """Конец 10-минутного режима: облако, тема «Цирк остыл»."""
+        from modules.themes import CLOWN_REDEMPTION_THEME_ID
+
+        gid = self._profile.get("id") if self._profile else None
+        if self._cloud_svc and self._cloud_svc.available and gid:
+            try:
+                self._cloud_svc.finalize_cheater_punishment(gid)
+                self._profile = self._cloud_svc.fetch_by_id(gid) or self._profile
+            except Exception as e:
+                print(f"[CHEATER] finalize: {e}")
+        pur = self.config.setdefault("shop_purchased_themes", [])
+        if CLOWN_REDEMPTION_THEME_ID not in pur:
+            pur.append(CLOWN_REDEMPTION_THEME_ID)
+        self.config["theme_id"] = CLOWN_REDEMPTION_THEME_ID
+        save_config(self.config)
+        self.panel.refresh_all()
 
     def _clear_cheater_mode(self):
         from modules.themes import get_theme_by_id, DEFAULT_THEME_ID
@@ -454,9 +500,19 @@ class InfernoApp:
         except Exception as e:
             print(f"[DAILY_QUEST] {e}")
 
-        if combo == "mass": msg = random.choice(REACTIONS_MASS)
-        elif combo == "double": msg = random.choice(REACTIONS_COMBO)
-        else: msg = random.choice(REACTIONS_SINGLE)
+        if getattr(self, "_cheater_ui_on", False):
+            if combo == "mass":
+                msg = random.choice(CLOWN_MODE_REACTIONS_MASS)
+            elif combo == "double":
+                msg = random.choice(CLOWN_MODE_REACTIONS_COMBO)
+            else:
+                msg = random.choice(CLOWN_MODE_REACTIONS_SINGLE)
+        elif combo == "mass":
+            msg = random.choice(REACTIONS_MASS)
+        elif combo == "double":
+            msg = random.choice(REACTIONS_COMBO)
+        else:
+            msg = random.choice(REACTIONS_SINGLE)
 
         print(f"\n{'='*45}")
         print(f"  [{now}] {msg}")

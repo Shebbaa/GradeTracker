@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from modules.shop_manager import DEFAULT_GOLD, DEFAULT_KEYS
+from modules.themes import DEFAULT_THEME_ID
 
 # Явный список префиксов/ключей прогресса в config
 _EXTRA_PROGRESS_KEYS = frozenset(
@@ -46,3 +47,7 @@ def clear_config_account_progress(config: dict) -> None:
     config["daily_quest_completed_date"] = ""
     config["daily_bonus_date"] = ""
     config["daily_bonus_gold_per_two"] = 0
+
+    config["shop_purchased_themes"] = []
+    config["theme_id"] = DEFAULT_THEME_ID
+    config.pop("floating_stickers", None)

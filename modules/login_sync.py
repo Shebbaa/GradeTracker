@@ -7,11 +7,60 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from modules.cloud_profile import CloudProfileService, normalize_fio_key, SEEDED_ADMIN_FIO, SEEDED_ADMIN_NICKNAME
+from modules.cloud_profile import (
+    CloudProfileService,
+    normalize_fio_key,
+    SEEDED_ADMIN_FIO,
+    SEEDED_ADMIN_NICKNAME,
+    CHEATER_PUNISHMENT_MINUTES,
+)
 
 # За одну «сессию» нельзя честно уйти дальше облака на такие величины (подстройте под баланс)
 MAX_EXCESS_TWOS_VS_CLOUD = 45
 MAX_EXCESS_GOLD_VS_CLOUD = 30000
+
+
+def _config_looks_tampered(
+    config: dict[str, Any],
+    local_total_twos: int,
+    cloud_twos: int,
+    local_gold: int,
+    cloud_gold: int,
+) -> bool:
+    """
+    Грубая эвристика правки config.json: много золота/валюты при «замороженных» двойках относительно облака.
+    """
+    cg = int(config.get("shop_gold", 0))
+    if cg > cloud_gold + MAX_EXCESS_GOLD_VS_CLOUD and local_total_twos <= cloud_twos + 2:
+        return True
+    if local_gold > cloud_gold + MAX_EXCESS_GOLD_VS_CLOUD and local_total_twos <= cloud_twos + 2:
+        return True
+    if config.get("_inferno_config_tamper"):
+        return True
+    return False
+
+
+def _cheat_local_snapshot(
+    config: dict[str, Any], local_total_twos: int, local_gold: int, local_keys: int
+) -> dict[str, Any]:
+    return {
+        "total_twos": int(local_total_twos),
+        "gold": int(local_gold),
+        "keys": int(local_keys),
+        "shop_gold_config": int(config.get("shop_gold", 0)),
+        "shop_keys_config": int(config.get("shop_keys", 0)),
+        "theme_id": config.get("theme_id"),
+        "purchased_themes": list(config.get("shop_purchased_themes", [])),
+    }
+
+
+def _legit_cloud_snapshot(cloud_twos: int, cloud_gold: int, cloud_keys: int, title: str) -> dict[str, Any]:
+    return {
+        "total_fives": int(cloud_twos),
+        "gold": int(cloud_gold),
+        "keys": int(cloud_keys),
+        "title": str(title),
+    }
 
 
 @dataclass
@@ -45,6 +94,15 @@ def cheater_period_active(profile: dict[str, Any], now: datetime | None = None) 
     if until and now < until:
         return True
     return bool(profile.get("is_cheater")) and until is None
+
+
+def cheater_seconds_remaining(profile: dict[str, Any], now: datetime | None = None) -> int | None:
+    """Сколько секунд осталось до конца наказания; None если таймер не по until."""
+    now = now or datetime.now(timezone.utc)
+    until = _parse_until(profile.get("cheater_until"))
+    if until is None or now >= until:
+        return None
+    return max(0, int((until - now).total_seconds()))
 
 
 def login_or_create_profile(
@@ -97,9 +155,10 @@ def perform_handshake(
     Сравнивает прогресс; при подозрении на накрутку — mark_cheater и откат локали к облаку.
     """
     pid = profile["id"]
-    cloud_twos = int(profile.get("total_fives", 0))
-    cloud_gold = int(profile.get("gold", 0))
-    cloud_keys = int(profile.get("keys", 0))
+    fresh = svc.fetch_by_id(pid) or profile
+    cloud_twos = int(fresh.get("total_fives", 0))
+    cloud_gold = int(fresh.get("gold", 0))
+    cloud_keys = int(fresh.get("keys", 0))
 
     excess_twos = local_total_twos - cloud_twos
     excess_gold = local_gold - cloud_gold
@@ -109,33 +168,45 @@ def perform_handshake(
         cheater = True
     if not skip_anticheat and excess_gold > MAX_EXCESS_GOLD_VS_CLOUD:
         cheater = True
+    if not skip_anticheat and _config_looks_tampered(
+        config, local_total_twos, cloud_twos, local_gold, cloud_gold
+    ):
+        cheater = True
 
     if cheater:
-        svc.mark_cheater_five_minutes(pid)
-        prof = svc.fetch_by_id(pid) or profile
+        cloud_title = str(fresh.get("title") or stats_title_fn())
+        legit = _legit_cloud_snapshot(cloud_twos, cloud_gold, cloud_keys, cloud_title)
+        local_snap = _cheat_local_snapshot(config, local_total_twos, local_gold, local_keys)
+        svc.mark_cheater_punishment(
+            pid,
+            local_snapshot=local_snap,
+            cloud_legit_snapshot=legit,
+        )
+        prof = svc.fetch_by_id(pid) or fresh
         stats_manager.apply_cloud_counters(cloud_twos)
         config["shop_gold"] = cloud_gold
         config["shop_keys"] = cloud_keys
+        config.pop("_inferno_config_tamper", None)
         save_config_fn()
         return LoginSyncResult(
             profile=prof,
             cheater_triggered=True,
             pulled_from_cloud=True,
-            message="Обнаружен несоразмерный прирост прогресса. Активирован режим «клоуна» на 5 минут.",
+            message=(
+                f"Обнаружена накрутка или правка прогресса. Режим наказания на {CHEATER_PUNISHMENT_MINUTES} минут. "
+                "Локальные счётчики приведены к данным Supabase."
+            ),
         )
 
     pulled = False
-    if cloud_twos > local_total_twos or cloud_gold > local_gold or cloud_keys > local_keys:
+    profile = fresh
+    # Только суммарные двойки подтягиваем из облака (восстановление прогресса).
+    # Золото и инвентарь ключей НЕ перезаписываем с сервера при cloud > local — иначе
+    # после траты ключей локально до 0 при следующем входе снова подставлялось значение из Supabase.
+    if cloud_twos > local_total_twos:
         stats_manager.apply_cloud_counters(cloud_twos)
-        if cloud_gold > local_gold:
-            config["shop_gold"] = cloud_gold
-        if cloud_keys > local_keys:
-            config["shop_keys"] = cloud_keys
         save_config_fn()
         pulled = True
-        local_total_twos = cloud_twos
-        local_gold = max(local_gold, cloud_gold)
-        local_keys = max(local_keys, cloud_keys)
 
     title = stats_title_fn()
     svc.update_progress(

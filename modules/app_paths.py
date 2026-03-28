@@ -1,10 +1,16 @@
 """
-Пути данных приложения: %LOCALAPPDATA%/InfernoTracker/ (Windows) или XDG-подобный каталог.
+Пути данных приложения — кроссплатформенно (pathlib + platform), без хардкода только под Windows.
+
+- Windows:  %LOCALAPPDATA%\\InfernoTracker
+- macOS:    ~/Library/Application Support/InfernoTracker
+- Linux:    $XDG_DATA_HOME/InfernoTracker или ~/.local/share/InfernoTracker
+
 Ассеты (bundled с Nuitka) остаются рядом с .exe; сюда переносятся только пользовательские данные.
 """
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -18,10 +24,17 @@ def _base_dir() -> Path:
 
 def inferno_app_data_dir() -> Path:
     """Каталог пользовательских данных Inferno (создаётся при ensure)."""
-    if os.name == "nt":
+    sys_name = platform.system()
+    if sys_name == "Windows":
         local = os.environ.get("LOCALAPPDATA")
         if local:
             return Path(local) / "InfernoTracker"
+        return Path.home() / "AppData" / "Local" / "InfernoTracker"
+    if sys_name == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "InfernoTracker"
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser().resolve() / "InfernoTracker"
     return Path.home() / ".local" / "share" / "InfernoTracker"
 
 
