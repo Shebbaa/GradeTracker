@@ -58,7 +58,7 @@ CENSOR_CHAR = "\u2588"  # █ — полный блок
 
 
 class FloatingStickerWindow(QWidget):
-    """Плавающий стикер поверх экрана; перетащить в зону кодов — закрыть."""
+    """Плавающий стикер поверх экрана; закрыть можно только вернув в зону кодов ПОСЛЕ того, как его вывели из этой зоны."""
 
     def __init__(self, panel: "DictatorControlPanel", pixmap: QPixmap, meta: dict):
         super().__init__(None)
@@ -67,6 +67,8 @@ class FloatingStickerWindow(QWidget):
         self._pm = pixmap
         self._drag_anchor = None
         self._press_global = None
+        # Пока не было выноса курсора/sticker за пределы зоны кодов, отпускание внутри зоны не считаем «вернуть в корзину»
+        self._drag_left_codes_zone = False
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
@@ -84,22 +86,30 @@ class FloatingStickerWindow(QWidget):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag_anchor = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self._press_global = e.globalPosition().toPoint()
+            self._drag_left_codes_zone = False
 
     def mouseMoveEvent(self, e):
         if self._drag_anchor is not None and (e.buttons() & Qt.MouseButton.LeftButton):
             self.move(e.globalPosition().toPoint() - self._drag_anchor)
+            gc = self.frameGeometry().center()
+            if not self._panel._floating_sticker_global_point_in_codes_zone(gc):
+                self._drag_left_codes_zone = True
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
             return
         self._drag_anchor = None
-        if self._panel._floating_sticker_global_point_in_codes_zone(self.frameGeometry().center()):
+        center = self.frameGeometry().center()
+        in_zone = self._panel._floating_sticker_global_point_in_codes_zone(center)
+        if self._drag_left_codes_zone and in_zone:
             self._panel._remove_floating_sticker_by_id(self._meta.get("id"))
             self.hide()
             self.deleteLater()
             if self in getattr(self._panel, "_floating_sticker_windows", []):
                 self._panel._floating_sticker_windows.remove(self)
+            self._drag_left_codes_zone = False
             return
+        self._drag_left_codes_zone = False
         self._panel._update_floating_sticker_pos(self._meta.get("id"), self.x(), self.y())
         if self._press_global is not None:
             dist = (e.globalPosition().toPoint() - self._press_global).manhattanLength()
@@ -1138,11 +1148,12 @@ class DictatorControlPanel(QMainWindow):
         self._known_unlocked_themes = set()  # для отслеживания новых разблокировок тем
         self._floating_sticker_windows = []
         # Гейтинг (дозированное открытие контента)
-        self._content_gate_prev = {"stats": False, "shop": False, "themes": False}
+        self._content_gate_prev = {"stats": False, "shop": False, "themes": False, "leaderboard": False}
         self._content_gate_prev = dict(self._content_gate_prev)
         self._tab_idx_stats = None
         self._tab_idx_themes = None
         self._tab_idx_goals = None
+        self._tab_idx_leaderboard = None
         self._shop_btn = None
 
         self.setWindowTitle("INFERNO GRADE TRACKER")
@@ -3696,6 +3707,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             from modules.leaderboard_ui import LeaderboardTab
 
             self.tabs.addTab(LeaderboardTab(self._cloud_service), "\U0001f3c6 Топ")
+            self._tab_idx_leaderboard = self.tabs.count() - 1
         dl.addWidget(self.tabs)
         ml.addWidget(self._detail)
 
@@ -4071,7 +4083,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             # Переключаемся на вкладку целей (если она есть)
             if getattr(self, "tabs", None) is not None and self._tab_idx_goals is not None:
                 self.tabs.setCurrentIndex(self._tab_idx_goals)
-            flash = ComboFlashLabel("🔒 Магазин закрыт.\nНужно 15 двоек.", self, 3200)
+            flash = ComboFlashLabel("🔒 Магазин закрыт.\nНужно 20 двоек.", self, 3200)
             flash.setStyleSheet(
                 "color:#ffcc00; font-size:26px; font-weight:bold; background:transparent; font-family:"
                 f"{FONT_FAMILY_DISPLAY};"
@@ -4922,6 +4934,15 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self._gate_stats_pb.setFormat("")
         l.addWidget(self._gate_stats_pb)
 
+        self._gate_themes_label = QLabel("")
+        self._gate_themes_label.setStyleSheet("color:#cc66ff; font-size:11px; font-weight:bold;")
+        l.addWidget(self._gate_themes_label)
+        self._gate_themes_pb = QProgressBar()
+        self._gate_themes_pb.setRange(0, 100)
+        self._gate_themes_pb.setFixedHeight(10)
+        self._gate_themes_pb.setFormat("")
+        l.addWidget(self._gate_themes_pb)
+
         self._gate_shop_label = QLabel("")
         self._gate_shop_label.setStyleSheet("color:#dda644; font-size:11px; font-weight:bold;")
         l.addWidget(self._gate_shop_label)
@@ -4931,14 +4952,14 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self._gate_shop_pb.setFormat("")
         l.addWidget(self._gate_shop_pb)
 
-        self._gate_themes_label = QLabel("")
-        self._gate_themes_label.setStyleSheet("color:#cc66ff; font-size:11px; font-weight:bold;")
-        l.addWidget(self._gate_themes_label)
-        self._gate_themes_pb = QProgressBar()
-        self._gate_themes_pb.setRange(0, 100)
-        self._gate_themes_pb.setFixedHeight(10)
-        self._gate_themes_pb.setFormat("")
-        l.addWidget(self._gate_themes_pb)
+        self._gate_leaderboard_label = QLabel("")
+        self._gate_leaderboard_label.setStyleSheet("color:#ffaa88; font-size:11px; font-weight:bold;")
+        l.addWidget(self._gate_leaderboard_label)
+        self._gate_leaderboard_pb = QProgressBar()
+        self._gate_leaderboard_pb.setRange(0, 100)
+        self._gate_leaderboard_pb.setFixedHeight(10)
+        self._gate_leaderboard_pb.setFormat("")
+        l.addWidget(self._gate_leaderboard_pb)
 
         l.addStretch(1)
 
@@ -5007,8 +5028,9 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
 
         stats_twos_req = 2
         stats_mercy_req = 5
-        shop_twos_req = 15
-        themes_twos_req = 20
+        themes_twos_req = 15
+        shop_twos_req = 20
+        leaderboard_twos_req = 25
 
         # Статистика: 2 двойки + 5 помилований
         stats_ok = total_twos >= stats_twos_req and mercy_total >= stats_mercy_req
@@ -5021,17 +5043,29 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         )
         self._gate_stats_pb.setValue(int(stats_prog * 100))
 
-        # Магазин: 15 двоек
+        # Огни: 15 двоек
+        themes_ok = total_twos >= themes_twos_req
+        themes_prog = min(1.0, total_twos / max(1, themes_twos_req))
+        self._gate_themes_label.setText(f"Огни: {'✅' if themes_ok else '🔒'} {total_twos}/{themes_twos_req} двойки")
+        self._gate_themes_pb.setValue(int(themes_prog * 100))
+
+        # Магазин: 20 двоек
         shop_ok = total_twos >= shop_twos_req
         shop_prog = min(1.0, total_twos / max(1, shop_twos_req))
         self._gate_shop_label.setText(f"Магазин: {'✅' if shop_ok else '🔒'} {total_twos}/{shop_twos_req} двойки")
         self._gate_shop_pb.setValue(int(shop_prog * 100))
 
-        # Огни/темы: 20 двоек
-        themes_ok = total_twos >= themes_twos_req
-        themes_prog = min(1.0, total_twos / max(1, themes_twos_req))
-        self._gate_themes_label.setText(f"Огни: {'✅' if themes_ok else '🔒'} {total_twos}/{themes_twos_req} двойки")
-        self._gate_themes_pb.setValue(int(themes_prog * 100))
+        # Лидерборд (вкладка «Топ»): 25 двоек
+        lb_ok = total_twos >= leaderboard_twos_req
+        lb_prog = min(1.0, total_twos / max(1, leaderboard_twos_req))
+        self._gate_leaderboard_label.setText(
+            f"Топ (лидерборд): {'✅' if lb_ok else '🔒'} {total_twos}/{leaderboard_twos_req} двойки"
+        )
+        self._gate_leaderboard_pb.setValue(int(lb_prog * 100))
+
+        no_lb = getattr(self, "_tab_idx_leaderboard", None) is None
+        self._gate_leaderboard_label.setVisible(not no_lb)
+        self._gate_leaderboard_pb.setVisible(not no_lb)
 
     def _select_daily_quest(self, quest_id: str, btn: QPushButton | None = None):
         if not self.daily_quests.select_quest_today(quest_id):
@@ -5047,10 +5081,12 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         return {
             # Статистика: 2 двойки + 5 помилований
             "stats": total_twos >= 2 and mercy_total >= 5,
-            # Магазин: 15 двоек
-            "shop": total_twos >= 15,
-            # Огни/Темы: 20 двоек
-            "themes": total_twos >= 20,
+            # Огни: 15 двоек
+            "themes": total_twos >= 15,
+            # Магазин: 20 двоек
+            "shop": total_twos >= 20,
+            # Вкладка «Топ» (лидерборд): 25 двоек
+            "leaderboard": total_twos >= 25,
         }
 
     def _apply_content_gate(self):
@@ -5063,7 +5099,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             can_shop = gate["shop"]
             self._shop_btn.setEnabled(can_shop)
             if not can_shop:
-                self._shop_btn.setToolTip("🔒 Магазин закрыт. Нужны 15 двоек.")
+                self._shop_btn.setToolTip("🔒 Магазин закрыт. Нужны 20 двоек.")
                 # лёгкое "серение"
                 self._shop_btn.setStyleSheet(
                     "QPushButton{border:2px solid #333;color:#666;font-size:18px;"
@@ -5098,9 +5134,16 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     self._tab_idx_themes,
                     "\U0001f525 🔒 Огни" if not can_themes else "\U0001f525 Огни"
                 )
+            if self._tab_idx_leaderboard is not None:
+                can_lb = gate.get("leaderboard", False)
+                self.tabs.setTabEnabled(self._tab_idx_leaderboard, can_lb)
+                self.tabs.setTabText(
+                    self._tab_idx_leaderboard,
+                    "\U0001f3c6 🔒 Топ" if not can_lb else "\U0001f3c6 Топ",
+                )
 
         # Конфетти при переходе locked -> unlocked
-        for k in ("stats", "shop", "themes"):
+        for k in ("stats", "shop", "themes", "leaderboard"):
             if not prev.get(k, False) and gate.get(k, False):
                 self._confetti_boom_at_center(220 if k != "shop" else 240)
 
