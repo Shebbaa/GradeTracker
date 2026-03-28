@@ -154,3 +154,12 @@ class PunishmentEngine:
     @property
     def challenge_type(self) -> str | None:
         return self._active_challenge
+
+    def reset(self):
+        """Сброс внутреннего состояния (например после очистки аккаунта)."""
+        self._mercy_timestamps.clear()
+        self._detection_start_ts = None
+        self._last_two_ts = None
+        self._last_punishment_ts = 0
+        self._active_challenge = None
+        self._challenge_deadline = 0

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Inferno Grade Tracker — Meme Manager
 Загружает мемы/фотожабы из /assets/memes и /assets/custom_teacher.
@@ -15,14 +17,22 @@ class MemeManager:
     """Менеджер мемов и фотожаб."""
 
     def __init__(self):
+        self._memes_dir = MEMES_DIR
+        self._custom_dir = CUSTOM_DIR
         self._memes = []
         self._custom = []
         self.reload()
 
+    def set_asset_roots(self, memes_dir: Path | None = None, custom_dir: Path | None = None):
+        """Переопределение каталогов (например assets/cheater_mod/...). None = стандарт из config."""
+        self._memes_dir = memes_dir if memes_dir is not None else MEMES_DIR
+        self._custom_dir = custom_dir if custom_dir is not None else CUSTOM_DIR
+        self.reload()
+
     def reload(self):
         """Перезагрузить списки мемов из папок."""
-        self._memes = self._scan_dir(MEMES_DIR)
-        self._custom = self._scan_dir(CUSTOM_DIR)
+        self._memes = self._scan_dir(self._memes_dir)
+        self._custom = self._scan_dir(self._custom_dir)
 
     def _scan_dir(self, path: Path) -> list:
         if not path.exists():

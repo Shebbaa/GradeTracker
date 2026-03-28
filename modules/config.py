@@ -11,16 +11,21 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Пользовательские данные — строго в %LOCALAPPDATA%/InfernoTracker/
+from modules.app_paths import APP_DATA_DIR
+
 ASSETS_DIR = BASE_DIR / "assets"
 MEMES_DIR = ASSETS_DIR / "memes"
 SOUNDS_DIR = ASSETS_DIR / "sounds"
 CUSTOM_DIR = ASSETS_DIR / "custom_teacher"
-DB_PATH = BASE_DIR / "inferno.db"
-STATS_JSON = BASE_DIR / "stats.json"
-CONFIG_JSON = BASE_DIR / "config.json"
-SCREENSHOTS_DIR = BASE_DIR / "screenshots"
-for d in [MEMES_DIR, SOUNDS_DIR, CUSTOM_DIR, SCREENSHOTS_DIR]:
+CONFIG_JSON = APP_DATA_DIR / "config.json"
+STATS_ENC = APP_DATA_DIR / "stats.enc"  # XOR-JSON кэш статистики
+DB_PATH = APP_DATA_DIR / "inferno.db"   # рабочий SQLite (шифруется при выходе)
+DB_ENC_PATH = APP_DATA_DIR / "inferno.db.enc"
+SCREENSHOTS_DIR = APP_DATA_DIR / "screenshots"
+for d in [MEMES_DIR, SOUNDS_DIR, CUSTOM_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 COMBO_WINDOW_SEC = 300
 MASS_COMBO_WINDOW_SEC = 600

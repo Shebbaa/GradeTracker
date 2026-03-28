@@ -18,10 +18,18 @@ from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont
 
 from modules.config import (
-    load_config, save_config, SCREENSHOTS_DIR, get_rank,
-    REACTIONS_SINGLE, REACTIONS_COMBO, REACTIONS_MASS,
+    load_config,
+    save_config,
+    SCREENSHOTS_DIR,
+    BASE_DIR,
+    get_rank,
+    REACTIONS_SINGLE,
+    REACTIONS_COMBO,
+    REACTIONS_MASS,
     COMBO_WINDOW_SEC,
 )
+from modules.cloud_profile import get_supabase_client, CloudProfileService
+from modules.login_sync import perform_handshake, cheater_period_active
 from modules.stats_manager import StatsManager
 from modules.detector import GradeDetector
 from modules.calibrator import ZoneSelector, ColorPicker
@@ -54,6 +62,7 @@ class InfernoApp:
         self.overlay = InfernoOverlay()
         # Применяем тему из конфига к overlay
         from modules.themes import get_theme_by_id, DEFAULT_THEME_ID
+
         init_theme = get_theme_by_id(self.config.get("theme_id", DEFAULT_THEME_ID))
         if init_theme:
             self.overlay.set_theme(init_theme)
@@ -63,7 +72,14 @@ class InfernoApp:
         self.confetti = ConfettiExplosion()
 
         # Панель
-        self.panel = DictatorControlPanel(self.stats, self.config)
+        cli = get_supabase_client()
+        self._cloud_svc = CloudProfileService(cli) if cli else None
+        self._profile = None
+        self._cheater_ui_on = False
+
+        self.panel = DictatorControlPanel(
+            self.stats, self.config, cloud_service=self._cloud_svc
+        )
         self.panel._emoji_boom = self.emoji_boom
         self.panel._confetti_boom = self.confetti
         self._connect()
@@ -80,16 +96,129 @@ class InfernoApp:
         self._last_rank = rn
 
         # ═══ Экран авторизации ════════════════════════════════
-        self.auth_screen = AuthScreen()
+        self.auth_screen = AuthScreen(
+            cloud_service=self._cloud_svc,
+            local_snapshot_fn=self._login_snapshot,
+        )
         self.auth_screen.auth_success.connect(self._on_auth_success)
 
-    def _on_auth_success(self, fio, nickname):
-        """Авторизация прошла — показываем панель."""
+        self._cheater_watch_timer = QTimer()
+        self._cheater_watch_timer.timeout.connect(self._refresh_cheater_state)
+        self._cheater_watch_timer.start(4000)
+
+        # Папки для режима клоуна (можно положить мемы/звуки отдельно)
+        for sub in ("memes", "custom_teacher", "sounds"):
+            p = BASE_DIR / "assets" / "cheater_mod" / sub
+            p.mkdir(parents=True, exist_ok=True)
+
+    def _login_snapshot(self):
+        rn, _ = get_rank(self.stats.total)
+        return {
+            "total_twos": self.stats.total,
+            "gold": int(self.config.get("shop_gold", 0)),
+            "keys": int(self.config.get("shop_keys", 0)),
+            "title": rn,
+        }
+
+    def _on_auth_success(self, fio, nickname, profile, created_new):
+        """Авторизация + handshake с облаком."""
         print(f"[AUTH] {fio} ({nickname})")
-        self.panel.set_user(fio, nickname)
+        self._profile = profile
+        if self._cloud_svc and self._cloud_svc.available:
+            sync = perform_handshake(
+                self._cloud_svc,
+                profile,
+                config=self.config,
+                local_total_twos=self.stats.total,
+                local_gold=int(self.config.get("shop_gold", 0)),
+                local_keys=int(self.config.get("shop_keys", 0)),
+                stats_title_fn=lambda: get_rank(self.stats.total)[0],
+                save_config_fn=lambda: save_config(self.config),
+                stats_manager=self.stats,
+                skip_anticheat=created_new,
+            )
+            self._profile = sync.profile
+            if sync.cheater_triggered:
+                print(f"[SYNC] {sync.message}")
+            elif sync.pulled_from_cloud:
+                print("[SYNC] Локальные данные обновлены из облака.")
+        self.panel.set_user(fio, nickname, profile.get("id"))
         self.panel.show()
         self.panel.refresh_all()
         self._authed = True
+        self._refresh_cheater_state()
+
+    def _perform_account_wipe(self):
+        """Сброс прогресса: локально + в Supabase (без удаления ФИО/ника)."""
+        from modules.account_reset import clear_config_account_progress
+
+        clear_config_account_progress(self.config)
+        self.stats.wipe_all_progress()
+        self.panel.punishments.reset()
+        save_config(self.config)
+
+        title0 = get_rank(0)[0]
+        gid = self._profile.get("id") if self._profile else None
+        if self._cloud_svc and self._cloud_svc.available and gid:
+            g = int(self.config.get("shop_gold", 0))
+            k = int(self.config.get("shop_keys", 0))
+            try:
+                self._cloud_svc.reset_profile_progress_on_server(
+                    gid, gold=g, keys=k, title=title0
+                )
+                fresh = self._cloud_svc.fetch_by_id(gid)
+                if fresh:
+                    self._profile = fresh
+            except Exception as e:
+                print(f"[WIPE] облако: {e}")
+
+        if self._profile:
+            self._profile["total_fives"] = 0
+            self._profile["title"] = title0
+            self._profile["gold"] = int(self.config.get("shop_gold", 0))
+            self._profile["keys"] = int(self.config.get("shop_keys", 0))
+            self._profile["is_cheater"] = False
+            self._profile["cheater_until"] = None
+
+        self._last_rank = title0
+        if self._cheater_ui_on:
+            self._cheater_ui_on = False
+            self._clear_cheater_mode()
+        self.panel.refresh_all()
+        print("[WIPE] Прогресс аккаунта очищен.")
+
+    def _refresh_cheater_state(self):
+        if not getattr(self, "_authed", False) or not self._profile:
+            return
+        active = cheater_period_active(self._profile)
+        if active and not self._cheater_ui_on:
+            self._cheater_ui_on = True
+            self._apply_cheater_mode()
+        elif not active and self._cheater_ui_on:
+            self._cheater_ui_on = False
+            self._clear_cheater_mode()
+
+    def _apply_cheater_mode(self):
+        from modules.themes import get_theme_by_id, CHEATER_THEME_ID
+
+        clown = get_theme_by_id(CHEATER_THEME_ID)
+        if not clown:
+            return
+        root = BASE_DIR / "assets" / "cheater_mod"
+        self.memes.set_asset_roots(root / "memes", root / "custom_teacher")
+        self.sounds.set_sounds_root(root / "sounds")
+        self.panel.set_cheater_theme_locked(True)
+        self.overlay.set_theme(clown)
+
+    def _clear_cheater_mode(self):
+        from modules.themes import get_theme_by_id, DEFAULT_THEME_ID
+
+        self.memes.set_asset_roots(None, None)
+        self.sounds.set_sounds_root(None)
+        self.panel.set_cheater_theme_locked(False)
+        rt = get_theme_by_id(self.config.get("theme_id", DEFAULT_THEME_ID))
+        if rt:
+            self.overlay.set_theme(rt)
 
     def _connect(self):
         p = self.panel
@@ -104,9 +233,17 @@ class InfernoApp:
         p.theme_changed.connect(self._on_theme_changed)
         p.chk_sound.stateChanged.connect(lambda s: setattr(self.sounds, 'enabled', bool(s)))
         p.chk_overlay.stateChanged.connect(lambda s: setattr(self, '_overlay_on', bool(s)))
+        p.account_wipe_confirmed.connect(self._perform_account_wipe)
 
     def _on_theme_changed(self, theme):
         """Применяет новую тему к overlay."""
+        if getattr(self, "_cheater_ui_on", False):
+            from modules.themes import get_theme_by_id, CHEATER_THEME_ID
+
+            t = get_theme_by_id(CHEATER_THEME_ID)
+            if t:
+                self.overlay.set_theme(t)
+            return
         self.overlay.set_theme(theme)
 
     def _apply_config(self):
@@ -390,7 +527,12 @@ class InfernoApp:
         except Exception:
             pass
 
-        self._panic(); self.stats.close()
+        self._panic()
+        try:
+            self._cheater_watch_timer.stop()
+        except Exception:
+            pass
+        self.stats.close()
         if self._kb_listener:
             try: self._kb_listener.stop()
             except: pass

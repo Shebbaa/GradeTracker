@@ -6,20 +6,42 @@ SQLite + JSON, стрики, комбо, рекорды, помилования.
 import sqlite3
 import json
 import time
+import copy
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from modules.config import (
-    DB_PATH, STATS_JSON, ACHIEVEMENTS, get_rank,
+    DB_PATH, DB_ENC_PATH, STATS_ENC, ACHIEVEMENTS, get_rank,
     COMBO_WINDOW_SEC, MASS_COMBO_WINDOW_SEC,
 )
+from modules.secure_storage import SecureStorage
 
 
 class StatsManager:
     def __init__(self):
+        self._prepare_db_file_on_disk()
         self._db = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
         self._load_cache()
+
+    def _prepare_db_file_on_disk(self):
+        """Если есть только зашифрованная копия — восстанавливаем рабочий SQLite перед open."""
+        if not DB_PATH.exists() and DB_ENC_PATH.exists():
+            try:
+                SecureStorage.decrypt_file_to(DB_ENC_PATH, DB_PATH)
+            except OSError:
+                pass
+        for orphan in (DB_PATH.parent / (DB_PATH.name + "-wal"), DB_PATH.parent / (DB_PATH.name + "-shm")):
+            if orphan.exists() and not DB_PATH.exists():
+                try:
+                    orphan.unlink()
+                except OSError:
+                    pass
+
+    def apply_cloud_counters(self, total_fives: int) -> None:
+        """Подтягивает суммарные двойки с облака (журнал SQLite не пересобирается)."""
+        self._cache["total"] = max(0, int(total_fives))
+        self._save_cache()
 
     def _create_tables(self):
         c = self._db.cursor()
@@ -43,12 +65,18 @@ class StatsManager:
         self._db.commit()
 
     def _load_cache(self):
-        if STATS_JSON.exists():
-            try:
-                with open(STATS_JSON, "r") as f:
-                    self._cache = json.load(f)
-            except Exception:
-                self._cache = self._default_cache()
+        data = SecureStorage.load_json_encrypted(STATS_ENC)
+        if data is None:
+            # редкий fallback: незашифрованный кэш рядом (отладка)
+            legacy_plain = STATS_ENC.with_suffix(".json")
+            if legacy_plain.exists():
+                try:
+                    with open(legacy_plain, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = None
+        if data is not None:
+            self._cache = data
         else:
             self._cache = self._default_cache()
 
@@ -81,8 +109,19 @@ class StatsManager:
         }
 
     def _save_cache(self):
-        with open(STATS_JSON, "w") as f:
-            json.dump(self._cache, f, indent=2)
+        SecureStorage.save_json_encrypted(STATS_ENC, self._cache)
+
+    def wipe_all_progress(self) -> None:
+        """
+        Полный сброс игрового прогресса: журнал двоек, дневные сводки, ачивки, кэш стрика/помилований.
+        Не трогает настройки приложения в config.json.
+        """
+        self._db.execute("DELETE FROM twos_log")
+        self._db.execute("DELETE FROM daily_summary")
+        self._db.execute("DELETE FROM achievements")
+        self._db.commit()
+        self._cache = copy.deepcopy(self._default_cache())
+        self._save_cache()
 
     # ═══ Запись двойки ═══════════════════════════════════════════════════
     def record_two(self, screenshot_path: str = None, memo: str = None) -> dict:
@@ -326,4 +365,22 @@ class StatsManager:
 
     def close(self):
         self._save_cache()
+        try:
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         self._db.close()
+        # Упаковываем SQLite в XOR-файл и убираем открытый .db с диска
+        if DB_PATH.exists():
+            try:
+                SecureStorage.encrypt_file_to(DB_PATH, DB_ENC_PATH)
+                DB_PATH.unlink()
+            except OSError as e:
+                print(f"[STATS] encrypt db: {e}")
+        for suf in ("-wal", "-shm"):
+            side = DB_PATH.parent / (DB_PATH.name + suf)
+            if side.exists():
+                try:
+                    side.unlink()
+                except OSError:
+                    pass

@@ -1,33 +1,44 @@
 """
 Inferno Grade Tracker — Auth Screen
-Экран авторизации: ввод ФИО преподавателя для допуска в приложение.
-Пользователи хранятся в users.json в корне проекта.
+Вход по ФИО через Supabase (таблица profiles). Локальная миграция для первого запуска Аферова.
 """
-import json
-from pathlib import Path
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
-    QGraphicsDropShadowEffect, QApplication,
-)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import (
-    QFont, QColor, QPainter, QLinearGradient, QBrush, QPen,
-)
-from modules.config import BASE_DIR
+from __future__ import annotations
 
-USERS_FILE = BASE_DIR / "users.json"
+import json
+
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QGraphicsDropShadowEffect,
+    QApplication,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread
+from PyQt6.QtGui import (
+    QFont,
+    QColor,
+    QPainter,
+    QLinearGradient,
+    QBrush,
+    QPen,
+)
+
+from modules.app_paths import APP_DATA_DIR
+from modules.cloud_profile import CloudProfileService
+from modules.login_sync import login_or_create_profile
+
+USERS_FILE = APP_DATA_DIR / "users.json"
 FONT_FAMILY = "'Segoe UI', 'Inter', 'Roboto', 'Arial', sans-serif"
 FONT_FAMILY_DISPLAY = "'Impact', 'Arial Black', 'Segoe UI Black', sans-serif"
 
-ALLOWED_FIO = "Аферов Андрей Алексеевич"
-ALLOWED_NICKNAME = "Аферова"
 
 def _norm_fio(s: str) -> str:
     return " ".join(s.strip().split()).lower()
 
 
 def load_users() -> list:
-    """Загружает список пользователей из users.json."""
     if not USERS_FILE.exists():
         return []
     try:
@@ -38,13 +49,12 @@ def load_users() -> list:
 
 
 def save_users(users: list):
-    """Сохраняет список пользователей в users.json."""
+    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
 
 def find_user(fio_input: str) -> dict | None:
-    """Ищет пользователя по ФИО (без учёта регистра и лишних пробелов)."""
     users = load_users()
     normalized = " ".join(fio_input.strip().split()).lower()
     for u in users:
@@ -54,7 +64,6 @@ def find_user(fio_input: str) -> dict | None:
 
 
 def register_user(fio: str, nickname: str) -> dict:
-    """Регистрирует нового пользователя. Возвращает dict пользователя."""
     users = load_users()
     user = {"fio": fio.strip(), "nickname": nickname.strip()}
     users.append(user)
@@ -62,30 +71,63 @@ def register_user(fio: str, nickname: str) -> dict:
     return user
 
 
-class AuthScreen(QWidget):
-    """Полноэкранный экран авторизации в стиле Inferno."""
-    # Сигнал: (fio, nickname) при успешной авторизации
-    auth_success = pyqtSignal(str, str)
+class LoginWorker(QThread):
+    """Сетевой логин (создание/поиск профиля) вне GUI-потока."""
 
-    def __init__(self, parent=None):
+    finished_ok = pyqtSignal(dict, bool)
+    finished_err = pyqtSignal(str)
+
+    def __init__(self, fio: str, svc: CloudProfileService, snapshot: dict):
+        super().__init__()
+        self._fio = fio
+        self._svc = svc
+        self._snapshot = snapshot
+
+    def run(self):
+        try:
+            prof, created = login_or_create_profile(
+                self._svc,
+                self._fio,
+                local_total_twos=int(self._snapshot["total_twos"]),
+                local_gold=int(self._snapshot["gold"]),
+                local_keys=int(self._snapshot["keys"]),
+                local_title=str(self._snapshot["title"]),
+            )
+            self.finished_ok.emit(prof, created)
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+
+class AuthScreen(QWidget):
+    """Экран авторизации: ввод ФИО, проверка в Supabase."""
+
+    auth_success = pyqtSignal(str, str, dict, bool)
+
+    def __init__(
+        self,
+        parent=None,
+        cloud_service: CloudProfileService | None = None,
+        local_snapshot_fn=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("INFERNO — АВТОРИЗАЦИЯ")
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(420, 480)
+        self.setFixedSize(420, 520)
         self._error_msg = ""
         self._shake_offset = 0
         self._register_mode = False
+        self._cloud = cloud_service
+        self._local_snapshot_fn = local_snapshot_fn
+        self._worker: LoginWorker | None = None
         self._build_ui()
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        # Фон
+        _, h = self.width(), self.height()
         grad = QLinearGradient(0, 0, 0, h)
         grad.setColorAt(0.0, QColor(20, 2, 2, 245))
         grad.setColorAt(0.5, QColor(10, 0, 0, 250))
@@ -93,7 +135,6 @@ class AuthScreen(QWidget):
         p.setBrush(QBrush(grad))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
-        # Рамка
         p.setPen(QPen(QColor(255, 30, 0, 160), 2))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
@@ -104,7 +145,6 @@ class AuthScreen(QWidget):
         ml.setSpacing(10)
         ml.setContentsMargins(30, 25, 30, 25)
 
-        # Заголовок
         title = QLabel("\U0001f525 INFERNO \U0001f525")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
@@ -113,7 +153,8 @@ class AuthScreen(QWidget):
         )
         tg = QGraphicsDropShadowEffect()
         tg.setColor(QColor(255, 40, 0, 180))
-        tg.setBlurRadius(30); tg.setOffset(0, 0)
+        tg.setBlurRadius(30)
+        tg.setOffset(0, 0)
         title.setGraphicsEffect(tg)
         ml.addWidget(title)
 
@@ -144,8 +185,7 @@ class AuthScreen(QWidget):
             }}
         """
 
-        # Поле ввода ФИО
-        self.fio_label = QLabel("Введите своё ФИО, о Великий:")
+        self.fio_label = QLabel("Введите ФИО (как в базе кафедры):")
         self.fio_label.setStyleSheet(
             f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
         )
@@ -157,7 +197,6 @@ class AuthScreen(QWidget):
         self.fio_input.returnPressed.connect(self._try_submit)
         ml.addWidget(self.fio_input)
 
-        # Поле ввода никнейма (оставлено на месте, но регистрация отключена)
         self.nick_label = QLabel("Никнейм (короткое имя):")
         self.nick_label.setStyleSheet(
             f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
@@ -172,12 +211,9 @@ class AuthScreen(QWidget):
         self.nick_input.returnPressed.connect(self._try_submit)
         ml.addWidget(self.nick_input)
 
-        # Ошибка
         self.error_label = QLabel("")
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.error_label.setStyleSheet(
-            "color:#ff2020; font-size:12px; font-weight:bold;"
-        )
+        self.error_label.setStyleSheet("color:#ff2020; font-size:12px; font-weight:bold;")
         self.error_label.setWordWrap(True)
         ml.addWidget(self.error_label)
 
@@ -198,15 +234,16 @@ class AuthScreen(QWidget):
                 border-color: #ff4040;
                 color: #ff6060;
             }}
+            QPushButton:disabled {{
+                color:#664444; border-color:#442222;
+            }}
         """
 
-        # Кнопка входа/регистрации
         self.btn_submit = QPushButton("\u26a1 ВОЙТИ")
         self.btn_submit.setStyleSheet(BTN_STYLE)
         self.btn_submit.clicked.connect(self._try_submit)
         ml.addWidget(self.btn_submit)
 
-        # Кнопка переключения режима
         self.btn_toggle_mode = QPushButton("Нет аккаунта? Регистрация")
         self.btn_toggle_mode.setStyleSheet(
             f"QPushButton{{border:none; color:#664444; font-size:12px; "
@@ -214,13 +251,12 @@ class AuthScreen(QWidget):
             f"QPushButton:hover{{color:#ff6060;}}"
         )
         self.btn_toggle_mode.clicked.connect(self._toggle_mode)
-        self.btn_toggle_mode.setVisible(False)  # регистрация отключена
+        self.btn_toggle_mode.setVisible(False)
         ml.addWidget(self.btn_toggle_mode)
 
         ml.addStretch()
 
     def _toggle_mode(self):
-        """Переключает между входом и регистрацией."""
         self._register_mode = not self._register_mode
         self.error_label.setText("")
         if self._register_mode:
@@ -230,52 +266,51 @@ class AuthScreen(QWidget):
             self.btn_submit.setText("\U0001f4dd РЕГИСТРАЦИЯ")
             self.btn_toggle_mode.setText("Уже есть аккаунт? Войти")
         else:
-            self.fio_label.setText("Введите ФИО преподавателя:")
+            self.fio_label.setText("Введите ФИО (как в базе):")
             self.nick_label.setVisible(False)
             self.nick_input.setVisible(False)
             self.btn_submit.setText("\u26a1 ВОЙТИ")
             self.btn_toggle_mode.setText("Нет аккаунта? Регистрация")
 
     def _try_submit(self):
-        # В этом проекте доступен только логин (один пользователь).
         self._try_auth()
 
     def _try_auth(self):
+        if not self._cloud or not self._cloud.available:
+            self._show_error("Облако не настроено. Задайте INFERNO_SUPABASE_URL и INFERNO_SUPABASE_KEY.")
+            self._shake()
+            return
         fio_text = self.fio_input.text().strip()
         if not fio_text:
             self._show_error("Введите ФИО!")
             return
-        if _norm_fio(fio_text) != _norm_fio(ALLOWED_FIO):
-            self._show_error("Неверный ФИО.")
-            self._shake()
+        if self._local_snapshot_fn is None:
+            self._show_error("Внутренняя ошибка: нет снимка локальных данных.")
             return
+        snap = self._local_snapshot_fn()
+        self.btn_submit.setEnabled(False)
+        self.error_label.setText("Проверка в облаке…")
+        self._worker = LoginWorker(fio_text, self._cloud, snap)
+        self._worker.finished_ok.connect(self._on_login_ok)
+        self._worker.finished_err.connect(self._on_login_err)
+        self._worker.finished.connect(self._on_worker_done)
+        self._worker.start()
 
+    def _on_worker_done(self):
+        self.btn_submit.setEnabled(True)
+
+    def _on_login_ok(self, prof: dict, created_new: bool):
         self.error_label.setText("")
-        # ФИО в приложении фиксированное; никнейм используем для подписей "Файлы ..."
-        self.auth_success.emit(ALLOWED_FIO, ALLOWED_NICKNAME)
+        fio = prof.get("fio") or self.fio_input.text().strip()
+        nick = prof.get("nickname") or "???"
+        self.auth_success.emit(fio, nick, prof, created_new)
         self.hide()
 
-    def _try_register(self):
-        fio_text = self.fio_input.text().strip()
-        nick_text = self.nick_input.text().strip()
-        if not fio_text:
-            self._show_error("Введите ФИО!")
-            return
-        if not nick_text:
-            self._show_error("Введите никнейм!")
-            return
-        # Проверяем что такого пользователя ещё нет
-        if find_user(fio_text) is not None:
-            self._show_error("Такой преподаватель уже существует!")
-            self._shake()
-            return
-        user = register_user(fio_text, nick_text)
-        self.error_label.setText("")
-        self.auth_success.emit(user["fio"], user["nickname"])
-        self.hide()
+    def _on_login_err(self, msg: str):
+        self._show_error(msg)
+        self._shake()
 
     def show(self):
-        """Показывает экран по центру."""
         super().show()
         scr = QApplication.primaryScreen()
         if scr:
@@ -288,7 +323,6 @@ class AuthScreen(QWidget):
         self.error_label.setText(f"\u274c {msg}")
 
     def _shake(self):
-        """Тряска окна при неправильном ФИО."""
         self._shake_step = 0
         self._orig_pos = self.pos()
         self._shake_timer = QTimer(self)
@@ -302,16 +336,16 @@ class AuthScreen(QWidget):
             self.move(self._orig_pos)
             return
         import random
+
         dx = random.randint(-8, 8)
         self.move(self._orig_pos.x() + dx, self._orig_pos.y())
 
-    # Drag support
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):
-        if hasattr(self, '_drag_pos') and self._drag_pos:
+        if hasattr(self, "_drag_pos") and self._drag_pos:
             self.move(e.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, e):

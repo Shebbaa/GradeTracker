@@ -1093,7 +1093,36 @@ THEMES = [
             "ember_colors": [(100, 180, 255), (60, 200, 255), (150, 220, 255), (200, 240, 255)],
         },
     },
+    # ─── Системная: наказание / анти-чит (принудительно, не в магазине) ───
+    {
+        "id": "cheater_clown",
+        "category": "satirical",
+        "name": "Режим клоуна 🤡",
+        "desc": "Системная тема за подозрение в накрутке.",
+        "unlock": None,
+        "fire_scale": 0.95,
+        "no_glow": True,
+        "bg_particles": "gold_dust",
+        "counter_font": "Comic Sans MS",
+        "counter_font_scale": 1.05,
+        "colors": {
+            "primary": "#ff00ff",
+            "secondary": "#00ffff",
+            "accent": "#ffff00",
+            "glow": "#ff0088",
+            "bg_top": (80, 20, 90),
+            "bg_mid": (40, 10, 60),
+            "bg_bot": (120, 60, 20),
+            "border": "#00ff00",
+            "fire_core": (255, 0, 200),
+            "fire_mid": (0, 255, 255),
+            "fire_tip": (255, 255, 0),
+            "ember_colors": [(255, 0, 255), (0, 255, 0), (255, 128, 0), (0, 128, 255)],
+        },
+    },
 ]
+
+CHEATER_THEME_ID = "cheater_clown"
 
 DEFAULT_THEME_ID = "ultra_default"
 

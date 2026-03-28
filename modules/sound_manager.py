@@ -26,17 +26,24 @@ class SoundManager:
         self._enabled = True
         self._sounds = {}
         self._all_files = []
+        self._sounds_root = SOUNDS_DIR
         self._player = None
         self._audio_output = None
         self._scan_sounds()
         self._init_player()
 
+    def set_sounds_root(self, root: Path | None = None):
+        """Каталог звуков (режим клоуна — assets/cheater_mod/sounds). None — штатный SOUNDS_DIR."""
+        self._sounds_root = root if root is not None else SOUNDS_DIR
+        self._sounds.clear()
+        self._scan_sounds()
+
     def _scan_sounds(self):
         """Сканирует папку sounds."""
-        if not SOUNDS_DIR.exists():
+        if not self._sounds_root.exists():
             return
         self._all_files = [
-            f for f in SOUNDS_DIR.iterdir()
+            f for f in self._sounds_root.iterdir()
             if f.is_file() and f.suffix.lower() in SUPPORTED_AUDIO
         ]
         # Категоризация по имени файла

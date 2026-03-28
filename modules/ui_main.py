@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QCheckBox, QApplication, QTableWidget,
     QTableWidgetItem, QHeaderView, QSlider, QSizePolicy,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QSpacerItem,
-    QLineEdit, QToolTip,
+    QLineEdit, QToolTip, QMessageBox,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, pyqtSignal, QSize, QPropertyAnimation,
@@ -30,7 +30,7 @@ from modules.config import (
     ACHIEVEMENTS, CATEGORY_NAMES, DEFAULT_CONFIG,
 )
 from modules.themes import (
-    THEMES, DEFAULT_THEME_ID, get_theme_by_id, get_unlocked_themes,
+    THEMES, DEFAULT_THEME_ID, CHEATER_THEME_ID, get_theme_by_id, get_unlocked_themes,
     get_themes_by_category, THEME_CATEGORIES,
 )
 from modules.punishments import PunishmentEngine
@@ -1045,16 +1045,20 @@ class DictatorControlPanel(QMainWindow):
     request_show_zone = pyqtSignal()
     threshold_changed = pyqtSignal(float)
     theme_changed = pyqtSignal(dict)  # передаёт новую тему в main.py
+    account_wipe_confirmed = pyqtSignal()
 
-    def __init__(self, stats_manager, config, parent=None):
+    def __init__(self, stats_manager, config, parent=None, cloud_service=None):
         super().__init__(parent)
         self.stats = stats_manager
         self.config = config
+        self._cloud_service = cloud_service
+        self._cheater_theme_locked = False
         from modules.config import save_config
         self.shop = ShopManager(config, save_config)
         self.daily_quests = DailyQuestManager(self.config, self.stats, save_config)
         self._user_nickname = "???"  # заполняется после авторизации
         self._user_fio = ""
+        self._profile_id = None
 
         # Загрузка кастомных шрифтов
         from PyQt6.QtGui import QFontDatabase
@@ -1129,14 +1133,27 @@ class DictatorControlPanel(QMainWindow):
             y = (sg.height() - self.height()) // 2 + sg.y()
             self.move(x, y)
 
-    def set_user(self, fio: str, nickname: str):
+    def set_user(self, fio: str, nickname: str, profile_id: str | None = None):
         """Устанавливает пользователя после авторизации."""
         self._user_fio = fio
         self._user_nickname = nickname
+        self._profile_id = profile_id
         # Обновляем название вкладки ачивок
         if hasattr(self, 'tabs'):
             idx = self._ach_tab_index
             self.tabs.setTabText(idx, f"\U0001f4c2 Файлы\n{nickname}")
+
+    def set_cheater_theme_locked(self, locked: bool):
+        """
+        True — смена темы не сохраняется в config, интерфейс остаётся «клоунским».
+        При снятии блокировки восстанавливается theme_id из конфига.
+        """
+        self._cheater_theme_locked = bool(locked)
+        if locked:
+            self._select_theme(CHEATER_THEME_ID)
+        else:
+            tid = self.config.get("theme_id", DEFAULT_THEME_ID)
+            self._select_theme(tid)
 
     # ── Drag ──────────────────────────────────────────────────
     def mousePressEvent(self, e):
@@ -3549,6 +3566,10 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self.tabs.addTab(self._tab_settings(), "\u2699 Настр.")
         self.tabs.addTab(self._tab_goals(), "\U0001f3af Цели")
         self._tab_idx_goals = self.tabs.count() - 1
+        if self._cloud_service and getattr(self._cloud_service, "available", False):
+            from modules.leaderboard_ui import LeaderboardTab
+
+            self.tabs.addTab(LeaderboardTab(self._cloud_service), "\U0001f3c6 Топ")
         dl.addWidget(self.tabs)
         ml.addWidget(self._detail)
 
@@ -4608,9 +4629,57 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
 
         l.addSpacing(8)
 
+        sep_wipe = QFrame()
+        sep_wipe.setFixedHeight(1)
+        sep_wipe.setStyleSheet("background:#882222;")
+        l.addWidget(sep_wipe)
+
+        wipe_lbl = QLabel(
+            "Опасная зона: сбросит двойки, ачивки, стрик, помилования, квесты и связанный прогресс в config. "
+            "В Supabase останутся ФИО и ник; прогресс и валюта на сервере обнулятся."
+        )
+        wipe_lbl.setWordWrap(True)
+        wipe_lbl.setStyleSheet("color:#aa5555; font-size:10px; padding:4px 0;")
+        l.addWidget(wipe_lbl)
+
+        self.btn_wipe_account = QPushButton("\U0001f5d1 Очистить все данные аккаунта")
+        self.btn_wipe_account.setMinimumHeight(44)
+        self.btn_wipe_account.setStyleSheet(
+            "QPushButton{background:rgba(50,8,8,230);border:2px solid #aa2020;"
+            "border-radius:7px;color:#ff6666;font-size:13px;font-weight:bold;padding:10px;}"
+            "QPushButton:hover{background:rgba(80,12,12,240);border-color:#ff4040;color:#ffaaaa;}"
+        )
+        self.btn_wipe_account.clicked.connect(self._on_wipe_account_clicked)
+        l.addWidget(self.btn_wipe_account)
+
         scroll.setWidget(inner_w)
         outer.addWidget(scroll)
         return w
+
+    def _on_wipe_account_clicked(self):
+        """Двойное подтверждение перед полной очисткой прогресса."""
+        r1 = QMessageBox.question(
+            self,
+            "Очистка прогресса",
+            "Удалить весь игровой прогресс на этом ПК и синхронизировать сброс с облаком?\n\n"
+            "Останутся: ФИО и никнейм в базе, купленные темы, настройки зоны, цвета и хоткеи.\n\n"
+            "Будут обнулены: счётчик двоек, ачивки, стрик, помилования, дневники, секретные коды в конфиге, "
+            "квесты, золото и ключи (к стартовым значениям магазина).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if r1 != QMessageBox.StandardButton.Yes:
+            return
+        r2 = QMessageBox.warning(
+            self,
+            "Последнее предупреждение",
+            "Это действие необратимо. Точно очистить все данные аккаунта?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if r2 != QMessageBox.StandardButton.Yes:
+            return
+        self.account_wipe_confirmed.emit()
 
     def _tab_goals(self):
         """Вкладка «Цели»: квест дня + дозированное открытие контента."""
@@ -5657,16 +5726,20 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         return completed
 
     def _select_theme(self, theme_id):
+        if getattr(self, "_cheater_theme_locked", False):
+            theme_id = CHEATER_THEME_ID
         theme = get_theme_by_id(theme_id)
         if not theme:
             return
-        # Emoji boom при выборе темы
-        gp = self.mapToGlobal(QPoint(self.width() // 2, self.height() // 2))
-        self._emoji_boom_at(gp.x(), gp.y(), 20)
+        # Emoji при выборе темы (не в режиме принудительного клоуна)
+        if not getattr(self, "_cheater_theme_locked", False):
+            gp = self.mapToGlobal(QPoint(self.width() // 2, self.height() // 2))
+            self._emoji_boom_at(gp.x(), gp.y(), 20)
         self._current_theme = theme
-        self.config["theme_id"] = theme_id
-        from modules.config import save_config
-        save_config(self.config)
+        if not getattr(self, "_cheater_theme_locked", False):
+            self.config["theme_id"] = theme_id
+            from modules.config import save_config
+            save_config(self.config)
         # Сброс кешей картинок и анимационных состояний
         for attr in ('_star_pixmaps', '_bg_images_pixmaps', '_center_pixmap',
                       '_sun_particles', '_villain_lasers', '_binary_digits',
