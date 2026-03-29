@@ -19,8 +19,8 @@
   "bg_opacity": 85,
   "widget_opacity": 95,
   "pixel_threshold": 0.24,
-  "shop_gold": 104876,
-  "shop_keys": 61,
+  "shop_gold": 0,
+  "shop_keys": 0,
   "shop_purchased_themes": [
     "classic_ice",
     "classic_lavender",

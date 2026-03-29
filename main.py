@@ -9,6 +9,9 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+_LAUNCHED_VIA_LAUNCHER = "--launched-by-launcher" in sys.argv
+
+
 # ═══ High-DPI fix — MUST be before QApplication ═══════════════════
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 os.environ.setdefault("QT_SCALE_FACTOR", "1.0")

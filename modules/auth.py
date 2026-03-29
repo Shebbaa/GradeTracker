@@ -1,6 +1,8 @@
 """
-Inferno Grade Tracker — Auth Screen
-Вход по ФИО через Supabase (таблица profiles). Локальная миграция для первого запуска Аферова.
+Inferno Grade Tracker — Auth Screen (v2, no registration)
+Вход только по ФИО через Supabase (таблица profiles).
+Регистрация — только через Supabase-админа.
+Реферальный код коллеги вводится один раз при первом входе.
 """
 from __future__ import annotations
 
@@ -54,25 +56,8 @@ def save_users(users: list):
         json.dump(users, f, indent=2, ensure_ascii=False)
 
 
-def find_user(fio_input: str) -> dict | None:
-    users = load_users()
-    normalized = " ".join(fio_input.strip().split()).lower()
-    for u in users:
-        if " ".join(u["fio"].strip().split()).lower() == normalized:
-            return u
-    return None
-
-
-def register_user(fio: str, nickname: str) -> dict:
-    users = load_users()
-    user = {"fio": fio.strip(), "nickname": nickname.strip()}
-    users.append(user)
-    save_users(users)
-    return user
-
-
 class LoginWorker(QThread):
-    """Сетевой логин (создание/поиск профиля) вне GUI-потока."""
+    """Сетевой логин (только LOGIN, без регистрации) вне GUI-потока."""
 
     finished_ok = pyqtSignal(dict, bool)
     finished_err = pyqtSignal(str)
@@ -82,21 +67,17 @@ class LoginWorker(QThread):
         fio: str,
         svc: CloudProfileService,
         snapshot: dict,
-        *,
-        register_mode: bool = False,
-        nickname: str = "",
         referral_code: str = "",
     ):
         super().__init__()
         self._fio = fio
         self._svc = svc
         self._snapshot = snapshot
-        self._register_mode = register_mode
-        self._nickname = nickname
         self._referral_code = referral_code
 
     def run(self):
         try:
+            # Всегда LOGIN — регистрация только через Supabase-админа
             prof, created = login_or_create_profile(
                 self._svc,
                 self._fio,
@@ -104,17 +85,25 @@ class LoginWorker(QThread):
                 local_gold=int(self._snapshot["gold"]),
                 local_keys=int(self._snapshot["keys"]),
                 local_title=str(self._snapshot["title"]),
-                register_mode=self._register_mode,
-                nickname=self._nickname,
+                register_mode=False,
+                nickname="",
                 referral_code=self._referral_code,
             )
             self.finished_ok.emit(prof, created)
+        except PermissionError as e:
+            # Преподаватель не найден в базе
+            self.finished_err.emit(
+                "Преподаватель не найден в базе.\n"
+                "Обратитесь к администратору для регистрации."
+            )
         except Exception as e:
             self.finished_err.emit(str(e))
 
 
 class AuthScreen(QWidget):
-    """Экран авторизации: ввод ФИО, проверка в Supabase."""
+    """Экран авторизации: ввод ФИО, проверка в Supabase.
+    Регистрация — только через Supabase-админа (SQL/Table Editor).
+    Реферальный код вводится один раз при первом входе."""
 
     auth_success = pyqtSignal(str, str, dict, bool)
 
@@ -130,19 +119,17 @@ class AuthScreen(QWidget):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(420, 600)
-        self._error_msg = ""
-        self._shake_offset = 0
-        self._register_mode = False
+        self.setFixedSize(420, 520)
         self._cloud = cloud_service
         self._local_snapshot_fn = local_snapshot_fn
         self._worker: LoginWorker | None = None
         self._build_ui()
 
+    # ── Фон ──────────────────────────────────────────────────
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        _, h = self.width(), self.height()
+        h = self.height()
         grad = QLinearGradient(0, 0, 0, h)
         grad.setColorAt(0.0, QColor(20, 2, 2, 245))
         grad.setColorAt(0.5, QColor(10, 0, 0, 250))
@@ -155,12 +142,14 @@ class AuthScreen(QWidget):
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
         p.end()
 
+    # ── Построение UI ─────────────────────────────────────────
     def _build_ui(self):
         ml = QVBoxLayout(self)
         ml.setSpacing(10)
         ml.setContentsMargins(30, 25, 30, 25)
 
-        title = QLabel("\U0001f525 INFERNO \U0001f525")
+        # Заголовок
+        title = QLabel("🔥 INFERNO 🔥")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
             f"color:#ff2020; font-size:36px; font-weight:bold; "
@@ -181,7 +170,7 @@ class AuthScreen(QWidget):
         )
         ml.addWidget(sub)
 
-        ml.addSpacing(15)
+        ml.addSpacing(10)
 
         INPUT_STYLE = f"""
             QLineEdit {{
@@ -190,7 +179,7 @@ class AuthScreen(QWidget):
                 border: 2px solid #662222;
                 border-radius: 8px;
                 padding: 10px 14px;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: bold;
                 font-family: {FONT_FAMILY};
             }}
@@ -200,11 +189,12 @@ class AuthScreen(QWidget):
             }}
         """
 
-        self.fio_label = QLabel("Введите ФИО (как в базе кафедры):")
-        self.fio_label.setStyleSheet(
+        # ── ФИО ──
+        fio_label = QLabel("Введите ФИО (как в базе кафедры):")
+        fio_label.setStyleSheet(
             f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
         )
-        ml.addWidget(self.fio_label)
+        ml.addWidget(fio_label)
 
         self.fio_input = QLineEdit()
         self.fio_input.setPlaceholderText("Фамилия Имя Отчество")
@@ -212,25 +202,12 @@ class AuthScreen(QWidget):
         self.fio_input.returnPressed.connect(self._try_submit)
         ml.addWidget(self.fio_input)
 
-        self.nick_label = QLabel("Никнейм (короткое имя):")
-        self.nick_label.setStyleSheet(
-            f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
+        # ── Реферальный код (только если ещё не был введён) ──
+        self._ref_label = QLabel("Код коллеги (только при первом входе, необязательно):")
+        self._ref_label.setStyleSheet(
+            f"color:#aa6666; font-size:12px; font-weight:bold; font-family:{FONT_FAMILY};"
         )
-        self.nick_label.setVisible(False)
-        ml.addWidget(self.nick_label)
-
-        self.nick_input = QLineEdit()
-        self.nick_input.setPlaceholderText("Например: ИвановИ")
-        self.nick_input.setStyleSheet(INPUT_STYLE)
-        self.nick_input.setVisible(False)
-        self.nick_input.returnPressed.connect(self._try_submit)
-        ml.addWidget(self.nick_input)
-
-        self.referral_label = QLabel("Код коллеги (реферал, необязательно):")
-        self.referral_label.setStyleSheet(
-            f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
-        )
-        ml.addWidget(self.referral_label)
+        ml.addWidget(self._ref_label)
 
         self.referral_input = QLineEdit()
         self.referral_input.setPlaceholderText("Например: INFERNO-742")
@@ -238,6 +215,18 @@ class AuthScreen(QWidget):
         self.referral_input.returnPressed.connect(self._try_submit)
         ml.addWidget(self.referral_input)
 
+        # Примечание о регистрации
+        reg_note = QLabel(
+            "Нет аккаунта? Обратитесь к администратору."
+        )
+        reg_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        reg_note.setWordWrap(True)
+        reg_note.setStyleSheet(
+            f"color:#553333; font-size:10px; font-family:{FONT_FAMILY}; padding:4px 0;"
+        )
+        ml.addWidget(reg_note)
+
+        # ── Ошибка ──
         self.error_label = QLabel("")
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.error_label.setStyleSheet("color:#ff2020; font-size:12px; font-weight:bold;")
@@ -266,69 +255,54 @@ class AuthScreen(QWidget):
             }}
         """
 
-        self.btn_submit = QPushButton("\u26a1 ВОЙТИ")
+        self.btn_submit = QPushButton("⚡ ВОЙТИ")
         self.btn_submit.setStyleSheet(BTN_STYLE)
         self.btn_submit.clicked.connect(self._try_submit)
         ml.addWidget(self.btn_submit)
 
-        self.btn_toggle_mode = QPushButton("Нет аккаунта? Регистрация")
-        self.btn_toggle_mode.setStyleSheet(
-            f"QPushButton{{border:none; color:#664444; font-size:12px; "
-            f"font-family:{FONT_FAMILY}; background:transparent; padding:6px;}}"
-            f"QPushButton:hover{{color:#ff6060;}}"
-        )
-        self.btn_toggle_mode.clicked.connect(self._toggle_mode)
-        self.btn_toggle_mode.setVisible(True)
-        ml.addWidget(self.btn_toggle_mode)
-
         ml.addStretch()
 
-    def _toggle_mode(self):
-        self._register_mode = not self._register_mode
-        self.error_label.setText("")
-        if self._register_mode:
-            self.fio_label.setText("ФИО нового преподавателя:")
-            self.nick_label.setVisible(True)
-            self.nick_input.setVisible(True)
-            self.referral_label.setVisible(True)
-            self.referral_input.setVisible(True)
-            self.btn_submit.setText("\U0001f4dd РЕГИСТРАЦИЯ")
-            self.btn_toggle_mode.setText("Уже есть аккаунт? Войти")
+    # ── Логика ───────────────────────────────────────────────
+    def _hide_referral_if_used(self, config: dict | None = None):
+        """Скрыть поле реферала если код уже был введён ранее."""
+        if config and config.get("used_referral_code"):
+            self._ref_label.setVisible(False)
+            self.referral_input.setVisible(False)
         else:
-            self.fio_label.setText("Введите ФИО (как в базе):")
-            self.nick_label.setVisible(False)
-            self.nick_input.setVisible(False)
-            self.referral_label.setVisible(True)
+            self._ref_label.setVisible(True)
             self.referral_input.setVisible(True)
-            self.btn_submit.setText("\u26a1 ВОЙТИ")
-            self.btn_toggle_mode.setText("Нет аккаунта? Регистрация")
 
     def _try_submit(self):
         self._try_auth()
 
     def _try_auth(self):
         if not self._cloud or not self._cloud.available:
-            self._show_error("Облако не настроено. Задайте INFERNO_SUPABASE_URL и INFERNO_SUPABASE_KEY.")
+            self._show_error(
+                "Облако не настроено.\n"
+                "Задайте INFERNO_SUPABASE_URL и INFERNO_SUPABASE_KEY."
+            )
             self._shake()
             return
+
         fio_text = self.fio_input.text().strip()
         if not fio_text:
             self._show_error("Введите ФИО!")
             return
+
         if self._local_snapshot_fn is None:
             self._show_error("Внутренняя ошибка: нет снимка локальных данных.")
             return
+
         snap = self._local_snapshot_fn()
+        ref = self.referral_input.text().strip()
+
         self.btn_submit.setEnabled(False)
         self.error_label.setText("Проверка в облаке…")
-        nick = self.nick_input.text().strip() if self._register_mode else ""
-        ref = self.referral_input.text().strip()
+
         self._worker = LoginWorker(
             fio_text,
             self._cloud,
             snap,
-            register_mode=self._register_mode,
-            nickname=nick,
             referral_code=ref,
         )
         self._worker.finished_ok.connect(self._on_login_ok)
@@ -343,7 +317,9 @@ class AuthScreen(QWidget):
         self.error_label.setText("")
         fio = prof.get("fio") or self.fio_input.text().strip()
         nick = prof.get("nickname") or "???"
-        self.auth_success.emit(fio, nick, prof, created_new)
+
+        # Сигнал успеха (created_new всегда False для login-only)
+        self.auth_success.emit(fio, nick, prof, False)
         self.hide()
 
     def _on_login_err(self, msg: str):
@@ -359,8 +335,8 @@ class AuthScreen(QWidget):
             y = (sg.height() - self.height()) // 2 + sg.y()
             self.move(x, y)
 
-    def _show_error(self, msg):
-        self.error_label.setText(f"\u274c {msg}")
+    def _show_error(self, msg: str):
+        self.error_label.setText(f"❌ {msg}")
 
     def _shake(self):
         self._shake_step = 0
@@ -376,7 +352,6 @@ class AuthScreen(QWidget):
             self.move(self._orig_pos)
             return
         import random
-
         dx = random.randint(-8, 8)
         self.move(self._orig_pos.x() + dx, self._orig_pos.y())
 
