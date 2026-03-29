@@ -103,9 +103,8 @@ class SecureStorage:
 # и вставь результат сюда как bytes-литерал.
 
 # Placeholder — ЗАМЕНИ на реальные зашифрованные значения (см. инструкцию ниже)
-_ENC_SUPABASE_URL: bytes = b""
-_ENC_SUPABASE_KEY: bytes = b""
-
+_ENC_SUPABASE_URL: bytes = b'!\x1a\x12\x15\x01T@h\x1e\x17\x07\x176\x11\x15\x13\x13\x10\x17?\n\x1d!\x06\x17XJT\x18RT9\x0f\x04\x04\x01\x0bA$\x1dN'
+_ENC_SUPABASE_KEY: bytes = b',\x17,\r\x10)\x0c.=\x08.,\x01\x08(R%\x0c;+&\x1c\x19P\x1aqy\x04\x7fJQ\x118%/K@\n>8\x11\x07V\x19\x1b.\n!\x1f\x16\x00-\x1a\x12\x08?Hja\x7fRh\'$\n?\x1b\'Y\x0e\x1f\x19V<g8\x08:X7\x05=\'$\'?KdFS[oT(\x00\x16\x08;\x07\x18.\x11\x0c]\x16\x0e!(U"\x084-\r@\x7f\x0c5qzBoyp !\x0c A \x15\x16@/ (g<%\x00\x18,\x1f\x0e[\x11\x08,O\x7fZs\x03le\x00\x16)1\x11^!tBO]#\x1874W)<\x010W8\x11\x01\x03^CScdG\x0c\x1d7\x16F\x1a<5=$\x01\'&6%\x0b</\x04\x1fB7'
 
 def _encrypt_credential(plain: str) -> bytes:
     """Утилита: зашифровать строку для вставки в код. Вызывай из REPL."""

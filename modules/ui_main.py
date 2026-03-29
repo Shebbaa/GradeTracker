@@ -4001,6 +4001,10 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self.tabs.addTab(self._tab_settings(), "\u2699 Настр.")
         self.tabs.addTab(self._tab_goals(), "\U0001f3af Цели")
         self._tab_idx_goals = self.tabs.count() - 1
+        from modules.help_tab import build_help_tab
+
+        self.tabs.addTab(build_help_tab(), "\u2753 Помощь")
+        self._tab_idx_help = self.tabs.count() - 1
         if self._cloud_service and getattr(self._cloud_service, "available", False):
             from modules.leaderboard_ui import LeaderboardTab
 

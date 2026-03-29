@@ -10,3 +10,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS profiles_referral_code_unique
 
 COMMENT ON COLUMN profiles.referral_code IS 'Уникальный код вида INFERNO-777 для приглашений';
 COMMENT ON COLUMN profiles.referred_by IS 'Кто пригласил (FK на profiles.id)';
+

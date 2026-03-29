@@ -52,7 +52,7 @@ def main():
         "--standalone",
 
         # Windows: без консольного окна
-        "--windows-disable-console",
+        "--windows-console-mode=disable",
 
         # Иконка
         *(["--windows-icon-from-ico=assets/icon.ico"] if os.path.exists("assets/icon.ico") else []),
@@ -65,7 +65,13 @@ def main():
 
         # Плагины
         "--enable-plugin=pyqt6",
-        "--enable-plugin=numpy",
+
+        # Пакеты Supabase (gotrue убран: в новых версиях входит в supabase / другое имя)
+        "--include-package=supabase",
+        "--include-package=postgrest",
+        "--include-package=httpx",
+        "--include-package=realtime",
+        "--include-package=storage3",
 
         # Hidden imports
         "--include-module=PyQt6.QtMultimedia",
@@ -76,12 +82,6 @@ def main():
         "--include-module=pynput.keyboard._win32",
         "--include-module=pynput.mouse._win32",
         "--include-module=keyboard",
-        "--include-module=supabase",
-        "--include-module=postgrest",
-        "--include-module=gotrue",
-        "--include-module=httpx",
-        "--include-module=realtime",
-        "--include-module=storage3",
 
         # Оптимизация
         "--assume-yes-for-downloads",
