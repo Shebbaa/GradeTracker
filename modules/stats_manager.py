@@ -289,6 +289,38 @@ class StatsManager:
             self._db.commit()
         return new
 
+    def try_unlock_with_extra(self, extra: dict) -> list:
+        """Разблокировка ачивок по данным из облака (например referral_count)."""
+        unlocked = set(r[0] for r in self._db.execute("SELECT id FROM achievements").fetchall())
+        today_str = date.today().isoformat()
+        stats = {
+            "total": self._cache["total"],
+            "today": self.get_today_count(),
+            "streak": self._cache["streak"],
+            "combos_today": self._cache.get("session_combos", 0),
+            "max_combo": self._cache["max_combo"],
+            "month": self.get_month_count(),
+            "mercy_count": self._cache.get("mercy_total", 0),
+            "mercy_today": self._cache.get("mercy_today", 0) if self._cache.get("mercy_today_date") == today_str else 0,
+            "mercy_then_two": False,
+        }
+        stats.update(extra)
+        new = []
+        for ach in ACHIEVEMENTS:
+            if ach["id"] not in unlocked:
+                try:
+                    if ach["condition"](stats):
+                        self._db.execute(
+                            "INSERT INTO achievements (id, unlocked_ts) VALUES (?,?)",
+                            (ach["id"], time.time())
+                        )
+                        new.append(ach)
+                except Exception:
+                    pass
+        if new:
+            self._db.commit()
+        return new
+
     def get_unlocked_achievements(self) -> list:
         unlocked_ids = set(r[0] for r in self._db.execute("SELECT id FROM achievements").fetchall())
         return [

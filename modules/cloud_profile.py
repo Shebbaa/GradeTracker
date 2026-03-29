@@ -7,11 +7,18 @@ Supabase: таблица profiles и операции для логина, ли�
 """
 from __future__ import annotations
 
+import random
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from modules.secure_storage import get_supabase_url, get_supabase_key
+
+# Реферальная система «Вербовщик Палачей»
+REFERRAL_NEWBIE_GOLD_BONUS = 250
+REFERRAL_NEWBIE_KEYS_BONUS = 1
+REFERRAL_VETERAN_KEYS_BONUS = 1
+REFERRAL_CODE_PREFIX = "INFERNO-"
 
 
 def get_supabase_client():  # lazy import
@@ -30,6 +37,14 @@ def normalize_fio(s: str) -> str:
 
 def normalize_fio_key(s: str) -> str:
     return normalize_fio(s).lower()
+
+
+def normalize_referral_code(s: str) -> str:
+    return "".join(s.strip().upper().split())
+
+
+def generate_referral_code() -> str:
+    return f"{REFERRAL_CODE_PREFIX}{random.randint(100, 999)}"
 
 
 # Первичная миграция «главного» преподавателя: если в облаке нет строки, создаём из локальных данных
@@ -76,6 +91,50 @@ class CloudProfileService:
         data = getattr(rows, "data", None) or []
         return data[0] if data else None
 
+    def fetch_by_referral_code(self, code: str) -> dict[str, Any] | None:
+        key = normalize_referral_code(code)
+        if not key:
+            return None
+        rows = (
+            self._client.table("profiles")
+            .select("*")
+            .eq("referral_code", key)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(rows, "data", None) or []
+        return data[0] if data else None
+
+    def count_successful_referrals(self, profile_id: str) -> int:
+        """Сколько преподавателей пришло по коду этого профиля."""
+        try:
+            rows = (
+                self._client.table("profiles")
+                .select("id")
+                .eq("referred_by", profile_id)
+                .execute()
+            )
+            return len(getattr(rows, "data", None) or [])
+        except Exception:
+            return 0
+
+    def ensure_referral_code(self, profile_id: str) -> str | None:
+        """Гарантирует уникальный referral_code в облаке (для старых строк без кода)."""
+        row = self.fetch_by_id(profile_id)
+        if not row:
+            return None
+        existing = row.get("referral_code")
+        if existing:
+            return str(existing)
+        for _ in range(40):
+            code = generate_referral_code()
+            try:
+                self._client.table("profiles").update({"referral_code": code}).eq("id", profile_id).execute()
+                return code
+            except Exception:
+                continue
+        return None
+
     def insert_profile(
         self,
         fio: str,
@@ -85,20 +144,91 @@ class CloudProfileService:
         total_fives: int,
         title: str,
     ) -> dict[str, Any]:
-        payload = {
-            "id": str(uuid.uuid4()),
-            "fio": normalize_fio(fio),
-            "fio_key": normalize_fio_key(fio),
-            "nickname": nickname.strip(),
-            "gold": int(gold),
-            "keys": int(keys),
-            "total_fives": int(total_fives),
-            "title": title,
-            "is_cheater": False,
-            "cheater_until": None,
-            "is_admin": False,
-        }
-        self._client.table("profiles").insert(payload).execute()
+        for _ in range(30):
+            ref_code = generate_referral_code()
+            payload = {
+                "id": str(uuid.uuid4()),
+                "fio": normalize_fio(fio),
+                "fio_key": normalize_fio_key(fio),
+                "nickname": nickname.strip(),
+                "gold": int(gold),
+                "keys": int(keys),
+                "total_fives": int(total_fives),
+                "title": title,
+                "is_cheater": False,
+                "cheater_until": None,
+                "is_admin": False,
+                "referral_code": ref_code,
+                "referred_by": None,
+            }
+            try:
+                self._client.table("profiles").insert(payload).execute()
+                return payload
+            except Exception:
+                continue
+        raise RuntimeError("Не удалось создать уникальный реферальный код профиля.")
+
+    def register_new_user(
+        self,
+        fio: str,
+        nickname: str,
+        gold: int,
+        keys: int,
+        total_fives: int,
+        title: str,
+        referral_code_input: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Новый преподаватель в базе. Опционально — бонусы за верный код коллеги.
+        Новичок: +золото и +ключ; пригласивший: +ключ в облаке.
+        """
+        if self.fetch_by_fio(fio) or self.fetch_by_fio_relaxed(fio):
+            raise ValueError("Профиль с таким ФИО уже зарегистрирован. Войдите.")
+
+        inviter_id: str | None = None
+        if referral_code_input and referral_code_input.strip():
+            inv = self.fetch_by_referral_code(referral_code_input)
+            if not inv:
+                raise ValueError("Реферальный код не найден. Проверьте написание или оставьте поле пустым.")
+            inviter_id = str(inv["id"])
+
+        g, k = int(gold), int(keys)
+        if inviter_id:
+            g += REFERRAL_NEWBIE_GOLD_BONUS
+            k += REFERRAL_NEWBIE_KEYS_BONUS
+
+        payload: dict[str, Any] | None = None
+        for _ in range(30):
+            ref_code = generate_referral_code()
+            payload = {
+                "id": str(uuid.uuid4()),
+                "fio": normalize_fio(fio),
+                "fio_key": normalize_fio_key(fio),
+                "nickname": nickname.strip(),
+                "gold": g,
+                "keys": k,
+                "total_fives": int(total_fives),
+                "title": title,
+                "is_cheater": False,
+                "cheater_until": None,
+                "is_admin": False,
+                "referral_code": ref_code,
+                "referred_by": inviter_id,
+            }
+            try:
+                self._client.table("profiles").insert(payload).execute()
+                break
+            except Exception:
+                continue
+        if payload is None:
+            raise RuntimeError("Не удалось зарегистрировать профиль (код).")
+
+        if inviter_id:
+            inv = self.fetch_by_id(inviter_id)
+            if inv:
+                new_keys = int(inv.get("keys", 0)) + REFERRAL_VETERAN_KEYS_BONUS
+                self.update_progress(inviter_id, keys=new_keys)
+
         return payload
 
     def update_progress(

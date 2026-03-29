@@ -142,13 +142,20 @@ class InfernoApp:
                 save_config_fn=lambda: save_config(self.config),
                 stats_manager=self.stats,
                 skip_anticheat=created_new,
+                created_new=created_new,
             )
             self._profile = sync.profile
             if sync.cheater_triggered:
                 print(f"[SYNC] {sync.message}")
             elif sync.pulled_from_cloud:
                 print("[SYNC] Локальные данные обновлены из облака.")
-        self.panel.set_user(fio, nickname, self._profile.get("id"))
+        if self._cloud_svc and self._cloud_svc.available and self._profile.get("id"):
+            try:
+                self._cloud_svc.ensure_referral_code(str(self._profile["id"]))
+                self._profile = self._cloud_svc.fetch_by_id(str(self._profile["id"])) or self._profile
+            except Exception as e:
+                print(f"[REFERRAL] ensure code: {e}")
+        self.panel.set_user(fio, nickname, self._profile.get("id"), self._profile)
         self.panel.show()
         self.panel.refresh_all()
         self._authed = True

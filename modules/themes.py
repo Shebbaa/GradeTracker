@@ -33,6 +33,11 @@ THEME_CATEGORIES = [
         "name": "Сатирические 🤡",
         "desc": "Абсурд, хаос и чёрный юмор.",
     },
+    {
+        "id": "referral",
+        "name": "Вербовка коллег 📎",
+        "desc": "Темы за приглашение коллег по реферальному коду.",
+    },
 ]
 
 THEME_CATEGORY_ORDER = [c["id"] for c in THEME_CATEGORIES]
@@ -1093,6 +1098,91 @@ THEMES = [
             "ember_colors": [(100, 180, 255), (60, 200, 255), (150, 220, 255), (200, 240, 255)],
         },
     },
+    # ─── Реферальные (только цвета / эффекты, без отдельных ассетов) ───
+    {
+        "id": "referral_kgb",
+        "category": "referral",
+        "name": "Архивы КГБ 🗄",
+        "desc": "Чёрно-бело-красная схема. Эффект — холодный серый и кровавые акценты.",
+        "desc_full": "Чёрно-бело-красная схема. Холодный серый и алые всполохи на огне.<br><br>• Только за рефералов",
+        "unlock": "referrals:1",
+        "theme_icon_text": ("📎", "#888888"),
+        "tier": "referral",
+        "no_glow": True,
+        "fire_scale": 0.72,
+        "edge_glow": (120, 120, 130),
+        "colors": {
+            "primary": "#e0e0e0",
+            "secondary": "#8a8a8a",
+            "accent": "#cc0000",
+            "glow": "#990000",
+            "bg_top": (8, 8, 10),
+            "bg_mid": (4, 4, 6),
+            "bg_bot": (12, 4, 4),
+            "border": "#666666",
+            "fire_core": (180, 40, 40),
+            "fire_mid": (90, 90, 95),
+            "fire_tip": (200, 200, 205),
+            "ember_colors": [(160, 30, 30), (100, 100, 105), (60, 60, 65)],
+        },
+    },
+    {
+        "id": "referral_asylum",
+        "category": "referral",
+        "name": "Белый Халат / Психушка 🏥",
+        "desc": "Стерильно-белый интерфейс. Эффект — пульсирующий тревожный алый.",
+        "desc_full": "Стерильно-белый UI и пульсирующая рамка — как в палате без окон.<br><br>• Только за рефералов",
+        "unlock": "referrals:3",
+        "theme_icon_text": ("📎", "#ffffff"),
+        "tier": "referral",
+        "no_glow": True,
+        "fire_scale": 0.68,
+        "edge_glow_pulse": True,
+        "colors": {
+            "primary": "#1a1a1a",
+            "secondary": "#444444",
+            "accent": "#cc0000",
+            "glow": "#ff2222",
+            "bg_top": (248, 248, 250),
+            "bg_mid": (235, 235, 238),
+            "bg_bot": (255, 250, 250),
+            "border": "#cccccc",
+            "fire_core": (220, 20, 30),
+            "fire_mid": (255, 80, 80),
+            "fire_tip": (180, 180, 185),
+            "ember_colors": [(240, 40, 50), (255, 120, 100), (200, 200, 205)],
+        },
+    },
+    {
+        "id": "referral_kindergarten",
+        "category": "referral",
+        "name": "Детский Сад 🧸",
+        "desc": "Пастель и иронично-радужные всполохи.",
+        "desc_full": "Пастельный фон и радужные искры — тихий час окончен.<br><br>• Только за рефералов",
+        "unlock": "referrals:5",
+        "theme_icon_text": ("📎", "#ffb6c1"),
+        "tier": "referral",
+        "no_glow": True,
+        "fire_scale": 0.75,
+        "colors": {
+            "primary": "#ff69b4",
+            "secondary": "#dda0dd",
+            "accent": "#98fb98",
+            "glow": "#ffd700",
+            "bg_top": (255, 228, 240),
+            "bg_mid": (230, 245, 255),
+            "bg_bot": (255, 250, 220),
+            "border": "#ffb7c5",
+            "fire_core": (255, 105, 180),
+            "fire_mid": (147, 112, 219),
+            "fire_tip": (255, 215, 0),
+            "ember_colors": [
+                (255, 182, 193), (173, 216, 230), (144, 238, 144),
+                (255, 160, 122), (221, 160, 221),
+            ],
+        },
+    },
+
     # ─── Системная: наказание / анти-чит — максимально неприятная «коричневая» тема ───
     {
         "id": "cheater_clown",
@@ -1180,7 +1270,7 @@ def get_themes_by_category() -> list[tuple[dict, list[dict]]]:
 def get_unlocked_themes(unlocked_categories: set, total_twos: int,
                         total_achievements: int = 0, max_combo: int = 0,
                         streak: int = 0, purchased_themes: set | None = None,
-                        streak_lost: bool = False) -> list:
+                        streak_lost: bool = False, referral_count: int = 0) -> list:
     """
     Возвращает список тем с полем 'available': True/False.
     unlock=None          → всегда доступна
@@ -1219,6 +1309,15 @@ def get_unlocked_themes(unlocked_categories: set, total_twos: int,
                 available = True
             else:
                 lock_reason = "???"
+        elif isinstance(unlock, str) and unlock.startswith("referrals:"):
+            try:
+                need = int(unlock.split(":")[1])
+            except (IndexError, ValueError):
+                need = 999
+            if referral_count >= need:
+                available = True
+            else:
+                lock_reason = f"Нужно ещё {need - referral_count} коллег (всего {need})"
         else:
             # Неизвестный тип — не открыта
             lock_reason = "Условие не выполнено"

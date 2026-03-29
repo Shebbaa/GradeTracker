@@ -77,11 +77,23 @@ class LoginWorker(QThread):
     finished_ok = pyqtSignal(dict, bool)
     finished_err = pyqtSignal(str)
 
-    def __init__(self, fio: str, svc: CloudProfileService, snapshot: dict):
+    def __init__(
+        self,
+        fio: str,
+        svc: CloudProfileService,
+        snapshot: dict,
+        *,
+        register_mode: bool = False,
+        nickname: str = "",
+        referral_code: str = "",
+    ):
         super().__init__()
         self._fio = fio
         self._svc = svc
         self._snapshot = snapshot
+        self._register_mode = register_mode
+        self._nickname = nickname
+        self._referral_code = referral_code
 
     def run(self):
         try:
@@ -92,6 +104,9 @@ class LoginWorker(QThread):
                 local_gold=int(self._snapshot["gold"]),
                 local_keys=int(self._snapshot["keys"]),
                 local_title=str(self._snapshot["title"]),
+                register_mode=self._register_mode,
+                nickname=self._nickname,
+                referral_code=self._referral_code,
             )
             self.finished_ok.emit(prof, created)
         except Exception as e:
@@ -115,7 +130,7 @@ class AuthScreen(QWidget):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(420, 520)
+        self.setFixedSize(420, 600)
         self._error_msg = ""
         self._shake_offset = 0
         self._register_mode = False
@@ -211,6 +226,18 @@ class AuthScreen(QWidget):
         self.nick_input.returnPressed.connect(self._try_submit)
         ml.addWidget(self.nick_input)
 
+        self.referral_label = QLabel("Код коллеги (реферал, необязательно):")
+        self.referral_label.setStyleSheet(
+            f"color:#aa6666; font-size:13px; font-weight:bold; font-family:{FONT_FAMILY};"
+        )
+        ml.addWidget(self.referral_label)
+
+        self.referral_input = QLineEdit()
+        self.referral_input.setPlaceholderText("Например: INFERNO-742")
+        self.referral_input.setStyleSheet(INPUT_STYLE)
+        self.referral_input.returnPressed.connect(self._try_submit)
+        ml.addWidget(self.referral_input)
+
         self.error_label = QLabel("")
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.error_label.setStyleSheet("color:#ff2020; font-size:12px; font-weight:bold;")
@@ -251,7 +278,7 @@ class AuthScreen(QWidget):
             f"QPushButton:hover{{color:#ff6060;}}"
         )
         self.btn_toggle_mode.clicked.connect(self._toggle_mode)
-        self.btn_toggle_mode.setVisible(False)
+        self.btn_toggle_mode.setVisible(True)
         ml.addWidget(self.btn_toggle_mode)
 
         ml.addStretch()
@@ -263,12 +290,16 @@ class AuthScreen(QWidget):
             self.fio_label.setText("ФИО нового преподавателя:")
             self.nick_label.setVisible(True)
             self.nick_input.setVisible(True)
+            self.referral_label.setVisible(True)
+            self.referral_input.setVisible(True)
             self.btn_submit.setText("\U0001f4dd РЕГИСТРАЦИЯ")
             self.btn_toggle_mode.setText("Уже есть аккаунт? Войти")
         else:
             self.fio_label.setText("Введите ФИО (как в базе):")
             self.nick_label.setVisible(False)
             self.nick_input.setVisible(False)
+            self.referral_label.setVisible(True)
+            self.referral_input.setVisible(True)
             self.btn_submit.setText("\u26a1 ВОЙТИ")
             self.btn_toggle_mode.setText("Нет аккаунта? Регистрация")
 
@@ -290,7 +321,16 @@ class AuthScreen(QWidget):
         snap = self._local_snapshot_fn()
         self.btn_submit.setEnabled(False)
         self.error_label.setText("Проверка в облаке…")
-        self._worker = LoginWorker(fio_text, self._cloud, snap)
+        nick = self.nick_input.text().strip() if self._register_mode else ""
+        ref = self.referral_input.text().strip()
+        self._worker = LoginWorker(
+            fio_text,
+            self._cloud,
+            snap,
+            register_mode=self._register_mode,
+            nickname=nick,
+            referral_code=ref,
+        )
         self._worker.finished_ok.connect(self._on_login_ok)
         self._worker.finished_err.connect(self._on_login_err)
         self._worker.finished.connect(self._on_worker_done)

@@ -1382,6 +1382,8 @@ class DictatorControlPanel(QMainWindow):
         self._user_nickname = "???"  # заполняется после авторизации
         self._user_fio = ""
         self._profile_id = None
+        self._cloud_profile: dict | None = None
+        self._referral_count = 0
 
         # Загрузка кастомных шрифтов
         from PyQt6.QtGui import QFontDatabase
@@ -1480,15 +1482,54 @@ class DictatorControlPanel(QMainWindow):
         except Exception as e:
             print(f"[CLOUD] wallet sync: {e}")
 
-    def set_user(self, fio: str, nickname: str, profile_id: str | None = None):
+    def set_user(self, fio: str, nickname: str, profile_id: str | None = None, profile: dict | None = None):
         """Устанавливает пользователя после авторизации."""
         self._user_fio = fio
         self._user_nickname = nickname
         self._profile_id = profile_id
+        self._cloud_profile = profile
         # Обновляем название вкладки ачивок
         if hasattr(self, 'tabs'):
             idx = self._ach_tab_index
             self.tabs.setTabText(idx, f"\U0001f4c2 Файлы\n{nickname}")
+
+    def _sync_referral_count(self):
+        svc = self._cloud_service
+        pid = self._profile_id
+        if not svc or not getattr(svc, "available", False) or not pid:
+            self._referral_count = 0
+            return
+        try:
+            fresh = svc.fetch_by_id(str(pid))
+            if fresh:
+                self._cloud_profile = fresh
+            self._referral_count = int(svc.count_successful_referrals(str(pid)))
+        except Exception:
+            self._referral_count = 0
+
+    def _refresh_referral_settings_ui(self):
+        if not hasattr(self, "_settings_ref_code_lbl"):
+            return
+        code = (self._cloud_profile or {}).get("referral_code") or "—"
+        self._settings_ref_code_lbl.setText(code)
+        if not self._profile_id or not (self._cloud_service and self._cloud_service.available):
+            self._settings_ref_prog_lbl.setText(
+                "Облако недоступно — реферальный код и счётчик не синхронизируются."
+            )
+            return
+        n = self._referral_count
+        self._settings_ref_prog_lbl.setText(
+            f"Приглашено коллег: {n}\n"
+            "• «Связался с дурной компанией» (1) → тема «Архивы КГБ»\n"
+            "• «Насильственное лечение» (3) → «Белый Халат / Психушка»\n"
+            "• «Тихий Час» (5) → «Детский Сад»"
+        )
+
+    def _copy_referral_code_to_clipboard(self):
+        code = (self._cloud_profile or {}).get("referral_code") or ""
+        if not code or code == "—":
+            return
+        QApplication.clipboard().setText(code)
 
     def set_cheater_theme_locked(self, locked: bool):
         """
@@ -5232,6 +5273,41 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         info.setStyleSheet("color:#555; font-size:10px; padding:4px 0;")
         l.addWidget(info)
 
+        sep_ref = QFrame()
+        sep_ref.setFixedHeight(1)
+        sep_ref.setStyleSheet("background:#553311;")
+        l.addWidget(sep_ref)
+
+        ref_hdr = QLabel("📎 Достижения за коллег")
+        ref_hdr.setStyleSheet("color:#ddaa66; font-size:12px; font-weight:bold; padding:6px 0 2px 0;")
+        l.addWidget(ref_hdr)
+        ref_sub = QLabel("Дай коллеге свой код при регистрации — оба получают бонусы.")
+        ref_sub.setWordWrap(True)
+        ref_sub.setStyleSheet("color:#666; font-size:9px; padding-bottom:4px;")
+        l.addWidget(ref_sub)
+
+        ref_row = QHBoxLayout()
+        self._settings_ref_code_lbl = QLabel("—")
+        self._settings_ref_code_lbl.setStyleSheet(
+            "color:#ffcc66; font-size:13px; font-weight:bold; font-family:Consolas; "
+            "background:rgba(20,8,4,200); border:1px solid #553311; border-radius:6px; padding:6px 8px;"
+        )
+        ref_row.addWidget(self._settings_ref_code_lbl, 1)
+        self._settings_ref_copy_btn = QPushButton("Копировать")
+        self._settings_ref_copy_btn.setStyleSheet(
+            "QPushButton{background:rgba(40,20,8,220);border:1px solid #886622;color:#ccaa66;"
+            "border-radius:6px;padding:6px 10px;font-size:11px;font-weight:bold;}"
+            "QPushButton:hover{border-color:#ffaa44;color:#ffdd99;}"
+        )
+        self._settings_ref_copy_btn.clicked.connect(self._copy_referral_code_to_clipboard)
+        ref_row.addWidget(self._settings_ref_copy_btn)
+        l.addLayout(ref_row)
+
+        self._settings_ref_prog_lbl = QLabel("")
+        self._settings_ref_prog_lbl.setWordWrap(True)
+        self._settings_ref_prog_lbl.setStyleSheet("color:#888; font-size:10px; padding:4px 0 2px 0;")
+        l.addWidget(self._settings_ref_prog_lbl)
+
         l.addStretch(1)
 
         sep2 = QFrame()
@@ -5800,6 +5876,12 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self.rank_bar.setFormat(f"  {prog}%  ")
         self.rank_next_label.setText(f"\u2192 {nxt}")
 
+        self._sync_referral_count()
+        try:
+            self.stats.try_unlock_with_extra({"referral_count": self._referral_count})
+        except Exception:
+            pass
+
         if self._expanded:
             week = s.get_week_count()
             month = s.get_month_count()
@@ -5819,6 +5901,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                 self._rec_cards["total"].setText(str(rec['total']))
                 self._rec_cards["mercy"].setText(str(rec.get('mercy_total', 0)))
             self._refresh_achievements()
+            self._refresh_referral_settings_ui()
             self._refresh_themes()
             self._refresh_log()
 
@@ -5989,7 +6072,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     pb = QProgressBar(); pb.setRange(0, 100); pb.setValue(prog)
                     pb.setFixedHeight(8); pb.setFormat("")
                     vl.addWidget(pb)
-                    plab = QLabel(f"{cur}/???"); plab.setStyleSheet("color:#666;font-size:8px;")
+                    plab = QLabel(f"{cur}/{pt}"); plab.setStyleSheet("color:#666;font-size:8px;")
                     vl.addWidget(plab)
                 elif is_unlocked:
                     done = QLabel("\u2705 Получено!")
@@ -6102,7 +6185,11 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         current_streak = self.stats.streak
         purchased = set(self.config.get("shop_purchased_themes", []))
         streak_lost = self.config.get("_streak_lost", False)
-        all_themes = get_unlocked_themes(unlocked_cats, total_twos, total_achs, max_combo, current_streak, purchased, streak_lost)
+        ref_cnt = int(getattr(self, "_referral_count", 0))
+        all_themes = get_unlocked_themes(
+            unlocked_cats, total_twos, total_achs, max_combo, current_streak,
+            purchased, streak_lost, referral_count=ref_cnt,
+        )
 
         # Проверяем новые разблокировки
         current_unlocked = {t["id"] for t in all_themes if t["available"]}
@@ -6171,9 +6258,22 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     icon_text = t.get("theme_icon_text")  # ("число", "#цвет")
                     icon_path = self._get_theme_icon_path(t) if available else None
+                    _unlock = t.get("unlock")
+                    _is_ref_lock = (
+                        not available
+                        and isinstance(_unlock, str)
+                        and _unlock.startswith("referrals:")
+                    )
                     if not available:
-                        preview.setStyleSheet("background:#222;border:2px solid #333;border-radius:6px;")
-                        preview.setText("🔒")
+                        if _is_ref_lock:
+                            preview.setStyleSheet(
+                                "background:#221a14;border:2px solid #886644;border-radius:6px;"
+                            )
+                            preview.setText("\U0001f4ce")
+                            preview.setFont(QFont("Segoe UI Emoji", 20))
+                        else:
+                            preview.setStyleSheet("background:#222;border:2px solid #333;border-radius:6px;")
+                            preview.setText("\U0001f512")
                     elif icon_text:
                         txt, clr = icon_text
                         # Проверяем: содержит ли текст эмодзи (не цифры/буквы)
@@ -6203,21 +6303,34 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                     # ── Название ──
                     vl = QVBoxLayout(); vl.setSpacing(1)
                     hidden = not available
-                    name_text = "🔒 ???" if hidden else t["name"]
-                    nm = QLabel(name_text)
-                    nm.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-                    if is_current:
-                        nm.setStyleSheet("color:#ffcc00;")
-                    elif available:
-                        nm.setStyleSheet("color:#cc8844;")
+                    if hidden and _is_ref_lock:
+                        try:
+                            _need = int(str(_unlock).split(":")[1])
+                        except (IndexError, ValueError):
+                            _need = 0
+                        nm = QLabel(t["name"])
+                        nm.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                        nm.setStyleSheet("color:#887766;")
+                        sub = QLabel(f"\U0001f4ce Открой за {_need} коллег")
+                        sub.setStyleSheet("color:#665544;font-size:9px;")
+                        vl.addWidget(nm)
+                        vl.addWidget(sub)
                     else:
-                        nm.setStyleSheet("color:#555;")
-                    vl.addWidget(nm)
+                        name_text = "\U0001f512 ???" if hidden else t["name"]
+                        nm = QLabel(name_text)
+                        nm.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                        if is_current:
+                            nm.setStyleSheet("color:#ffcc00;")
+                        elif available:
+                            nm.setStyleSheet("color:#cc8844;")
+                        else:
+                            nm.setStyleSheet("color:#555;")
+                        vl.addWidget(nm)
 
                     hl.addLayout(vl, 1)
 
                     # ── Кнопка описания (i) ──
-                    if available and not hidden:
+                    if (available and not hidden) or _is_ref_lock:
                         full_desc = t.get("desc_full", t["desc"])
                         short_desc_hover = f"<b>{t['name']}</b><br>{t['desc']}"
                         desc_text_full = f"<b>{t['name']}</b><br><br>{full_desc}"
@@ -6288,6 +6401,25 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                             nm.setStyleSheet("color:#aa55dd;")
                         else:
                             f.setStyleSheet("QFrame{background:rgba(15,0,20,180);border:2px solid #552288;border-radius:6px;}")
+                    elif tier == "referral":
+                        if is_current:
+                            f.setStyleSheet(
+                                "QFrame{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                                "stop:0 rgba(40,28,18,220),stop:0.5 rgba(55,38,22,220),stop:1 rgba(40,28,18,220));"
+                                "border:2px solid #aa8866;border-radius:6px;}"
+                            )
+                            nm.setStyleSheet("color:#ffddaa;")
+                        elif available:
+                            f.setStyleSheet(
+                                "QFrame{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                                "stop:0 rgba(30,22,14,200),stop:0.5 rgba(45,32,20,200),stop:1 rgba(30,22,14,200));"
+                                "border:2px solid #886644;border-radius:6px;}"
+                            )
+                            nm.setStyleSheet("color:#ccaa88;")
+                        else:
+                            f.setStyleSheet(
+                                "QFrame{background:rgba(18,12,8,180);border:2px dashed #665544;border-radius:6px;}"
+                            )
                     elif tier == "legendary":
                         if is_current:
                             f.setStyleSheet(
@@ -6785,6 +6917,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             "month": s.get_month_count(),
             "mercy_count": s.mercy_total,
             "mercy_today": s.mercy_today,
+            "referral_count": int(getattr(self, "_referral_count", 0)),
         }
 
     def _refresh_log(self):

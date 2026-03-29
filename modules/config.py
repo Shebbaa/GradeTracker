@@ -355,6 +355,23 @@ ACHIEVEMENTS = [
     {"id": "buy_most_expensive", "name": "Олигарх", "desc": "Купи самую дорогую тему",
      "icon": "💎", "category": "shop", "hidden": False,
      "condition": lambda s: s.get("_bought_5000", False)},
+
+    # ══ РЕФЕРАЛЫ (referral) — прогресс с облака (referral_count) ══
+    {"id": "referral_bad_company", "name": "Связался с дурной компанией",
+     "desc": "Один коллега зарегистрировался по твоему коду. Тема «Архивы КГБ».",
+     "icon": "📎", "category": "referral", "hidden": False,
+     "progress_key": "referral_count", "progress_target": 1,
+     "condition": lambda s: int(s.get("referral_count", 0)) >= 1},
+    {"id": "referral_asylum_prog", "name": "Насильственное лечение",
+     "desc": "Три коллеги по коду. Тема «Белый Халат / Психушка».",
+     "icon": "🏥", "category": "referral", "hidden": False,
+     "progress_key": "referral_count", "progress_target": 3,
+     "condition": lambda s: int(s.get("referral_count", 0)) >= 3},
+    {"id": "referral_kindergarten_prog", "name": "Тихий Час",
+     "desc": "Пять коллег по коду. Тема «Детский Сад».",
+     "icon": "🧸", "category": "referral", "hidden": False,
+     "progress_key": "referral_count", "progress_target": 5,
+     "condition": lambda s: int(s.get("referral_count", 0)) >= 5},
 ]
 
 CATEGORY_NAMES = {
@@ -365,6 +382,7 @@ CATEGORY_NAMES = {
     "secret":   ("🔐 Секретные", "Тайны, открытые единицам"),
     "themes":   ("🎨 Темки темщика", "Глубокое погружение"),
     "shop":     ("🛒 Магазинные", "Прокрутки и покупки"),
+    "referral": ("📎 Реферальные коды", "Приглашение коллег и награды"),
 }
 
 REACTIONS_SINGLE = [

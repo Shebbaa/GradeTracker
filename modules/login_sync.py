@@ -13,6 +13,7 @@ from modules.cloud_profile import (
     SEEDED_ADMIN_FIO,
     SEEDED_ADMIN_NICKNAME,
     CHEATER_PUNISHMENT_MINUTES,
+    REFERRAL_VETERAN_KEYS_BONUS,
 )
 
 # За одну «сессию» нельзя честно уйти дальше облака на такие величины (подстройте под баланс)
@@ -113,9 +114,13 @@ def login_or_create_profile(
     local_gold: int,
     local_keys: int,
     local_title: str,
+    register_mode: bool = False,
+    nickname: str = "",
+    referral_code: str = "",
 ) -> tuple[dict[str, Any], bool]:
     """
-    Находит профиль или создаёт для SEEDED_ADMIN_FIO при первом запуске.
+    Находит профиль или создаёт для SEEDED_ADMIN_FIO при первом запуске,
+    либо регистрирует нового преподавателя (register_mode).
     Возвращает (profile, created_new).
     """
     row = svc.fetch_by_fio(fio_input) or svc.fetch_by_fio_relaxed(fio_input)
@@ -133,8 +138,24 @@ def login_or_create_profile(
         )
         return row, True
 
+    if register_mode:
+        nick = (nickname or "").strip()
+        if len(nick) < 2:
+            raise ValueError("Введите никнейм (минимум 2 символа).")
+        ref = (referral_code or "").strip()
+        row = svc.register_new_user(
+            fio_input,
+            nick,
+            local_gold,
+            local_keys,
+            local_total_twos,
+            local_title,
+            referral_code_input=ref if ref else None,
+        )
+        return row, True
+
     raise PermissionError(
-        "Преподаватель не найден в базе. Обратитесь к администратору для добавления профиля."
+        "Преподаватель не найден в базе. Воспользуйтесь «Регистрация» или обратитесь к администратору."
     )
 
 
@@ -150,6 +171,7 @@ def perform_handshake(
     save_config_fn: Callable[[], None],
     stats_manager: Any,
     skip_anticheat: bool,
+    created_new: bool = False,
 ) -> LoginSyncResult:
     """
     Сравнивает прогресс; при подозрении на накрутку — mark_cheater и откат локали к облаку.
@@ -200,6 +222,25 @@ def perform_handshake(
 
     pulled = False
     profile = fresh
+    # Новый профиль в обладе (регистрация / сид): подтянуть кошелёк с сервера, иначе локаль перезапишет бонусы.
+    if created_new:
+        config["shop_gold"] = cloud_gold
+        config["shop_keys"] = cloud_keys
+        save_config_fn()
+        local_gold = cloud_gold
+        local_keys = cloud_keys
+
+    # Бонус реферера (+ключ в облаке): подтянуть, не перетирая локаль при большой разнице
+    # (если на сервере ровно на REFERRAL_VETERAN_KEYS_BONUS ключей больше — это типичный реферал).
+    if (
+        not created_new
+        and cloud_keys > local_keys
+        and (cloud_keys - local_keys) == REFERRAL_VETERAN_KEYS_BONUS
+    ):
+        config["shop_keys"] = cloud_keys
+        save_config_fn()
+        local_keys = cloud_keys
+
     # Только суммарные двойки подтягиваем из облака (восстановление прогресса).
     # Золото и инвентарь ключей НЕ перезаписываем с сервера при cloud > local — иначе
     # после траты ключей локально до 0 при следующем входе снова подставлялось значение из Supabase.
