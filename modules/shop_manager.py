@@ -49,6 +49,8 @@ GOLDEN_EMPEROR_PRICE = 5000
 GOLDEN_EMPEROR_CHANCE = 0.15  # 15 %
 
 EXCHANGE_GOLD_PER_KEY = 250
+# Сколько золота списать за 1 ключ (обратный обмен)
+EXCHANGE_GOLD_FOR_ONE_KEY = 500
 
 # One-time gacha prizes — can only be won once, then replaced with 150 gold
 GACHA_UNIQUE_PRIZES = {"classic_candy", "ominous", "bottomless", "charged", "gold_1000"}
@@ -349,6 +351,14 @@ class ShopManager:
         if not self.spend_keys(1):
             return False
         self.add_gold(EXCHANGE_GOLD_PER_KEY)
+        return True
+
+    def exchange_gold_to_key(self) -> bool:
+        """Spend gold to get 1 key. Returns False if not enough gold."""
+        if self.get_gold() < EXCHANGE_GOLD_FOR_ONE_KEY:
+            return False
+        self.spend_gold(EXCHANGE_GOLD_FOR_ONE_KEY)
+        self.add_keys(1)
         return True
 
     # ── free gold (every 15 minutes) ─────────────────────

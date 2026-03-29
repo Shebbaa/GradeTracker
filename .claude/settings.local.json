@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /c/Users/bibob9000/Desktop/ек6нгкн/release/modules/*.py)",
+      "Bash(python -c \":*)"
+    ]
+  }
+}

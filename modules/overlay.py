@@ -7,6 +7,7 @@ import random
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QRadialGradient, QPixmap, QMovie, QTransform
+from modules.asset_loader import load_pixmap, load_movie, is_gif
 
 
 def safe_randint(a, b):
@@ -255,8 +256,11 @@ class InfernoOverlay(QWidget):
         if self._theme_id == "modern_windows":
             self._fire = 0.5
             import os
-            dolphin_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "win_dolphin.png")
-            dpm = QPixmap(dolphin_path)
+            base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+            dolphin_path = os.path.join(base, "win_dolphin.png.enc")
+            if not os.path.exists(dolphin_path):
+                dolphin_path = os.path.join(base, "win_dolphin.png")
+            dpm = load_pixmap(dolphin_path)
             self._dolphins = []
             if not dpm.isNull():
                 dsz = 220 + level * 50  # огромные дельфины
@@ -304,13 +308,12 @@ class InfernoOverlay(QWidget):
         if meme:
             try:
                 sz = min(350+level*60, 550)
-                # GIF — используем QMovie для анимации
-                if meme.lower().endswith(".gif"):
-                    self._movie = QMovie(meme)
-                    if self._movie.isValid():
+                # GIF — используем QMovie для анимации (поддержка .gif и .gif.enc)
+                if is_gif(meme):
+                    self._movie = load_movie(meme)
+                    if self._movie and self._movie.isValid():
                         self._movie.setScaledSize(QSize(sz, sz))
                         self._movie.start()
-                        # Начальный кадр для позиционирования
                         pm = self._movie.currentPixmap()
                         if not pm.isNull():
                             self._mpm = pm
@@ -318,7 +321,7 @@ class InfernoOverlay(QWidget):
                     else:
                         self._movie = None
                 else:
-                    pm = QPixmap(meme)
+                    pm = load_pixmap(meme)
                     if not pm.isNull():
                         self._mpm = pm.scaled(sz,sz,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
                         self._mr = QRect((sw-self._mpm.width())//2, (sh-self._mpm.height())//2-60, self._mpm.width(), self._mpm.height())

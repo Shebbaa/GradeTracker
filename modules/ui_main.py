@@ -2,7 +2,7 @@
 Inferno Grade Tracker — UI (v7 COMPACT 4K + Auth + Themes + Punishments)
 ──────────────────────────────────────────────────────────────────────────
 • «Файлы {nickname}» вместо «Ачивки», замазанные описания
-• Вкладка «Огни» — темы огня/цвета, часть скрыта/открывается
+• Вкладка «Темы» — цвета/оформление, часть скрыта по прогрессу
 • Микро-ивенты наказаний за чрезмерное помилование
 • 480×720, компакт, High-DPI-ready
 """
@@ -38,8 +38,9 @@ from modules.themes import (
     get_themes_by_category, THEME_CATEGORIES,
 )
 from modules.punishments import PunishmentEngine
-from modules.shop_manager import ShopManager
+from modules.shop_manager import ShopManager, EXCHANGE_GOLD_FOR_ONE_KEY
 from modules.daily_quests import DailyQuestManager
+from modules.asset_loader import load_pixmap
 
 # ═══════════════════════════════════════════════════════════════
 #  Константы размеров
@@ -58,49 +59,180 @@ CENSOR_CHAR = "\u2588"  # █ — полный блок
 
 
 class FloatingStickerWindow(QWidget):
-    """Плавающий стикер поверх экрана; закрыть можно только вернув в зону кодов ПОСЛЕ того, как его вывели из этой зоны."""
+    """Плавающий стикер; ПКМ — режим правки (поворот сверху, масштаб снизу справа), повторный ПКМ — выход.
+    Убрать: перетащить за пределы зоны и вернуть в зону кодов (как раньше), не в режиме правки."""
 
-    def __init__(self, panel: "DictatorControlPanel", pixmap: QPixmap, meta: dict):
+    _HANDLE_R = 14
+
+    def __init__(self, panel: "DictatorControlPanel", base_pm: QPixmap, meta: dict):
         super().__init__(None)
         self._panel = panel
         self._meta = meta
-        self._pm = pixmap
+        self._base_pm = base_pm
+        self._angle = float(meta.get("angle", 0.0))
+        self._scale = float(meta.get("scale", 1.0))
+        self._scale = max(0.2, min(3.5, self._scale))
+        self._edit_mode = False
         self._drag_anchor = None
         self._press_global = None
-        # Пока не было выноса курсора/sticker за пределы зоны кодов, отпускание внутри зоны не считаем «вернуть в корзину»
+        self._drag_mode = None  # None | "move" | "rotate" | "scale"
+        self._rotate_start_angle = 0.0
+        self._rotate_start_mouse_deg = 0.0
+        self._scale_start_dist = 1.0
+        self._scale_start_val = 1.0
+        self._scale_origin = QPointF()
         self._drag_left_codes_zone = False
+        self._drag_started_in_codes_zone = False
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(pixmap.size())
+        self._apply_transform_geometry()
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def _apply_transform_geometry(self):
+        w, h = self._base_pm.width(), self._base_pm.height()
+        t = QTransform()
+        t.translate(w / 2, h / 2)
+        t.rotate(self._angle)
+        t.scale(self._scale, self._scale)
+        t.translate(-w / 2, -h / 2)
+        rect = t.mapRect(QRectF(0, 0, w, h)).toAlignedRect()
+        self.setFixedSize(max(32, rect.width() + 4), max(32, rect.height() + 4))
+
+    def _apply_transform_keep_global_center(self):
+        """Меняет размер окна без «прыжка» — центр стикера остаётся на месте в экранных координатах."""
+        gc = self.frameGeometry().center()
+        self._apply_transform_geometry()
+        ngc = self.frameGeometry().center()
+        self.move(self.x() + gc.x() - ngc.x(), self.y() + gc.y() - ngc.y())
+
+    def _center_widget(self) -> QPointF:
+        return QPointF(self.width() / 2, self.height() / 2)
+
+    def _hit_rotate_handle(self, pos: QPoint) -> bool:
+        hp = QPointF(self.width() / 2, 16)
+        return (QPointF(pos) - hp).manhattanLength() < self._HANDLE_R + 6
+
+    def _hit_scale_handle(self, pos: QPoint) -> bool:
+        hp = QPointF(self.width() - 14, self.height() - 14)
+        return (QPointF(pos) - hp).manhattanLength() < self._HANDLE_R + 6
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._pm)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = self.width() / 2, self.height() / 2
+        p.translate(cx, cy)
+        p.rotate(self._angle)
+        p.scale(self._scale, self._scale)
+        p.drawPixmap(-self._base_pm.width() // 2, -self._base_pm.height() // 2, self._base_pm)
+        p.resetTransform()
+        if self._edit_mode:
+            pen = QPen(QColor(255, 170, 40))
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setWidth(1)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(2, 2, self.width() - 4, self.height() - 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 200, 80, 220))
+            p.drawEllipse(QPointF(self.width() / 2, 16), 8, 8)
+            p.setBrush(QColor(100, 200, 255, 220))
+            p.drawEllipse(QPointF(self.width() - 14, self.height() - 14), 8, 8)
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_anchor = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            self._press_global = e.globalPosition().toPoint()
-            self._drag_left_codes_zone = False
+        if e.button() == Qt.MouseButton.RightButton:
+            self._edit_mode = not self._edit_mode
+            self._drag_mode = None
+            self._drag_anchor = None
+            self.setCursor(
+                Qt.CursorShape.CrossCursor if self._edit_mode else Qt.CursorShape.OpenHandCursor
+            )
+            self.update()
+            e.accept()
+            return
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        gp = e.globalPosition().toPoint()
+        if self._edit_mode:
+            pos = e.position().toPoint()
+            c = self._center_widget()
+            if self._hit_rotate_handle(pos):
+                self._drag_mode = "rotate"
+                self._rotate_start_angle = self._angle
+                self._rotate_start_mouse_deg = math.degrees(
+                    math.atan2(e.position().y() - c.y(), e.position().x() - c.x())
+                )
+            elif self._hit_scale_handle(pos):
+                self._drag_mode = "scale"
+                self._scale_start_val = self._scale
+                dx = e.position().x() - c.x()
+                dy = e.position().y() - c.y()
+                self._scale_start_dist = max(8.0, math.hypot(dx, dy))
+            else:
+                self._drag_mode = "move"
+                self._drag_anchor = gp - self.frameGeometry().topLeft()
+            e.accept()
+            return
+        self._drag_anchor = gp - self.frameGeometry().topLeft()
+        self._press_global = gp
+        self._drag_left_codes_zone = False
+        self._drag_started_in_codes_zone = self._panel._floating_sticker_global_point_in_codes_zone(
+            self.frameGeometry().center()
+        )
 
     def mouseMoveEvent(self, e):
-        if self._drag_anchor is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+        if self._edit_mode and self._drag_mode == "rotate" and (e.buttons() & Qt.MouseButton.LeftButton):
+            c = self._center_widget()
+            cur = math.degrees(math.atan2(e.position().y() - c.y(), e.position().x() - c.x()))
+            self._angle = self._rotate_start_angle + (cur - self._rotate_start_mouse_deg)
+            self._apply_transform_keep_global_center()
+            self.update()
+            return
+        if self._edit_mode and self._drag_mode == "scale" and (e.buttons() & Qt.MouseButton.LeftButton):
+            c = self._center_widget()
+            dx = e.position().x() - c.x()
+            dy = e.position().y() - c.y()
+            dist = max(8.0, math.hypot(dx, dy))
+            self._scale = max(0.2, min(3.5, self._scale_start_val * (dist / self._scale_start_dist)))
+            self._apply_transform_keep_global_center()
+            self.update()
+            return
+        if self._edit_mode and self._drag_mode == "move" and self._drag_anchor is not None and (
+            e.buttons() & Qt.MouseButton.LeftButton
+        ):
+            self.move(e.globalPosition().toPoint() - self._drag_anchor)
+            self._panel._update_floating_sticker_record(self._meta.get("id"), x=self.x(), y=self.y())
+            return
+        if not self._edit_mode and self._drag_anchor is not None and (
+            e.buttons() & Qt.MouseButton.LeftButton
+        ):
             self.move(e.globalPosition().toPoint() - self._drag_anchor)
             gc = self.frameGeometry().center()
-            if not self._panel._floating_sticker_global_point_in_codes_zone(gc):
+            if self._drag_started_in_codes_zone and not self._panel._floating_sticker_global_point_in_codes_zone(
+                gc
+            ):
                 self._drag_left_codes_zone = True
 
     def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            return
         if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._edit_mode:
+            self._drag_mode = None
+            self._drag_anchor = None
+            self._panel._update_floating_sticker_record(
+                self._meta.get("id"), x=self.x(), y=self.y(), angle=self._angle, scale=self._scale
+            )
             return
         self._drag_anchor = None
         center = self.frameGeometry().center()
         in_zone = self._panel._floating_sticker_global_point_in_codes_zone(center)
+        # Убрать стикер только если вынесли из зоны кодов и вернули обратно (не при первом заносе!)
         if self._drag_left_codes_zone and in_zone:
             self._panel._remove_floating_sticker_by_id(self._meta.get("id"))
             self.hide()
@@ -108,9 +240,13 @@ class FloatingStickerWindow(QWidget):
             if self in getattr(self._panel, "_floating_sticker_windows", []):
                 self._panel._floating_sticker_windows.remove(self)
             self._drag_left_codes_zone = False
+            self._drag_started_in_codes_zone = False
             return
         self._drag_left_codes_zone = False
-        self._panel._update_floating_sticker_pos(self._meta.get("id"), self.x(), self.y())
+        self._drag_started_in_codes_zone = False
+        self._panel._update_floating_sticker_record(
+            self._meta.get("id"), x=self.x(), y=self.y(), angle=self._angle, scale=self._scale
+        )
         if self._press_global is not None:
             dist = (e.globalPosition().toPoint() - self._press_global).manhattanLength()
             pg = self._press_global
@@ -262,7 +398,7 @@ class BottomlessStarOverlay(QWidget):
         if not os.path.exists(path):
             base2 = r"C:\Users\bibob9000\Desktop\papka\45"
             path = os.path.join(base2, fname)
-        self._star_pixmap = QPixmap(path)
+        self._star_pixmap = load_pixmap(path)
         self._sx = float(gx) + random.uniform(-30, 30)
         self._sy = float(gy)
         self._vx = random.uniform(-2, 2)
@@ -604,22 +740,105 @@ class PunishmentOverlay(QLabel):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Окно магазина (отдельное)
+#  Портал рулетки (огонь вокруг скважины)
+# ═══════════════════════════════════════════════════════════════
+class InfernoGachaPortalWidget(QWidget):
+    """Замочная скважина с анимацией огня и искр."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(200)
+        self.setMinimumWidth(200)
+        self._phase = 0.0
+        self._keyhole = QPixmap()
+        kh = Path(BASE_DIR) / "assets" / "keyhole.png"
+        if kh.exists():
+            self._keyhole = load_pixmap(str(kh))
+        self._anim = QTimer(self)
+        self._anim.timeout.connect(self._tick)
+        self._anim.start(45)
+
+    def _tick(self):
+        self._phase += 0.11
+        self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._anim.isActive():
+            self._anim.start(45)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._anim.stop()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        ph = self._phase
+        # Кольцо огня
+        for i in range(40):
+            ang = i * (2 * math.pi / 40) + ph * 1.2
+            rr = 78 + 6 * math.sin(ph * 3 + i * 0.4)
+            x = cx + math.cos(ang) * rr
+            y = cy + math.sin(ang) * rr
+            al = int(100 + 80 * (0.5 + 0.5 * math.sin(ph * 2.5 + i)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 60 + (i % 50), 10, al))
+            p.drawEllipse(QPointF(x, y), 5, 5)
+        # Искры
+        for i in range(28):
+            ang = ph * 1.8 + i * 0.37
+            r2 = 52 + 25 * math.sin(ph * 2 + i)
+            x = cx + math.cos(ang) * r2
+            y = cy + math.sin(ang) * r2
+            p.setBrush(QColor(255, 200, 80, 120))
+            p.drawEllipse(QPointF(x, y), 2.5, 2.5)
+        # Свечение портала
+        rg = QRadialGradient(cx, cy, 62)
+        rg.setColorAt(0.0, QColor(255, 140, 40, 100))
+        rg.setColorAt(0.45, QColor(200, 40, 0, 55))
+        rg.setColorAt(1.0, QColor(40, 10, 0, 0))
+        p.setBrush(QBrush(rg))
+        p.drawEllipse(QPointF(cx, cy), 62, 62)
+        # Скважина
+        if not self._keyhole.isNull():
+            sz = min(118, min(w, h) - 40)
+            pm = self._keyhole.scaled(
+                int(sz), int(sz), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            p.drawPixmap(int(cx - pm.width() / 2), int(cy - pm.height() / 2), pm)
+        # Внутреннее ядро
+        rg2 = QRadialGradient(cx, cy, 28)
+        rg2.setColorAt(0, QColor(255, 220, 120, 70))
+        rg2.setColorAt(1, QColor(255, 60, 0, 0))
+        p.setBrush(QBrush(rg2))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), 28, 28)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Магазин (встраивается в главное окно или отдельно)
 # ═══════════════════════════════════════════════════════════════
 class ShopWindow(QWidget):
-    """Отдельное окно магазина в стиле Golden Emperor."""
+    """Единый адский дашборд магазина."""
 
-    def __init__(self, panel):
-        super().__init__(None)
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
         self._panel = panel
         self._drag_pos = None
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(520, 650)
-        # Декоративная анимация "монетного" фона
         self._coin_shimmer_phase = 0.0
+        self._embedded = parent is not None
+        if not self._embedded:
+            self.setWindowFlags(
+                Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+            )
+            self.setFixedSize(520, 720)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._decoration_timer = QTimer(self)
         self._decoration_timer.timeout.connect(self._tick_decoration)
         self._decoration_timer.start(60)
@@ -631,18 +850,24 @@ class ShopWindow(QWidget):
             self._coin_shimmer_phase = 0.0
         self.update()
 
-    # ── Dragging ──
+    # ── Перетаскивание только у отдельного окна (не встроенного) ──
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and ev.position().y() < 40:
+        if self._embedded:
+            return super().mousePressEvent(ev)
+        if ev.button() == Qt.MouseButton.LeftButton and ev.position().y() < 44:
             self._drag_pos = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             ev.accept()
 
     def mouseMoveEvent(self, ev):
+        if self._embedded:
+            return super().mouseMoveEvent(ev)
         if self._drag_pos and ev.buttons() & Qt.MouseButton.LeftButton:
             self.move(ev.globalPosition().toPoint() - self._drag_pos)
             ev.accept()
 
     def mouseReleaseEvent(self, ev):
+        if self._embedded:
+            return super().mouseReleaseEvent(ev)
         self._drag_pos = None
 
     def paintEvent(self, event):
@@ -677,209 +902,222 @@ class ShopWindow(QWidget):
             p.drawEllipse(x, y, r * 2, r * 2)
             p.setBrush(QColor(255, 90, 90, alpha // 2))
             p.drawEllipse(x + r // 2, y + r // 2, r, r)
-        p.end()
+
+    def _refresh_pool_countdown(self):
+        if not hasattr(self, "_pool_refresh_label") or self._pool_refresh_label is None:
+            return
+        rem = self._panel.shop.pool_time_remaining()
+        h, r = divmod(rem, 3600)
+        m, s = divmod(r, 60)
+        self._pool_refresh_label.setText(
+            f"До обновления списка тем: {h:02d}:{m:02d}:{s:02d}"
+        )
+
+    def _close_shop(self):
+        self.hide()
 
     def _build_ui(self):
         ml = QVBoxLayout(self)
-        ml.setContentsMargins(8, 4, 8, 8)
-        ml.setSpacing(4)
+        ml.setContentsMargins(6, 4, 6, 6)
+        ml.setSpacing(0)
+        panel = self._panel
 
-        # ── Title bar ──
         hdr = QHBoxLayout()
-        hdr.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("\U0001f6d2 МАГАЗИН")
+        title = QLabel("МАГАЗИН")
         title.setStyleSheet(
-            "color:#ffcc00; font-size:15px; font-weight:bold; font-family:'Impact','Arial Black',sans-serif;"
-            "letter-spacing:2px; background:transparent;"
+            "color:#e8c066; font-size:17px; font-weight:bold; font-family:'Impact','Arial Black',sans-serif;"
+            "letter-spacing:3px; background:transparent;"
         )
-        hdr.addWidget(title, 1)
+        hdr.addWidget(title, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        min_btn = QPushButton("\u2014")
-        min_btn.setFixedSize(28, 28)
-        min_btn.setStyleSheet(
-            "QPushButton{border:1px solid #886611;color:#ffcc00;font-size:14px;"
-            "padding:0;border-radius:5px;background:rgba(30,15,0,200);min-height:0;min-width:0;}"
-            "QPushButton:hover{background:rgba(60,30,0,230);}"
+        bal = QVBoxLayout()
+        bal.setSpacing(2)
+        wg_row = QHBoxLayout()
+        wg_row.addWidget(QLabel("🪙"))
+        self._wallet_gold_label = QLabel(str(panel.shop.get_gold()))
+        self._wallet_gold_label.setStyleSheet(
+            "color:#ffcc00; font-size:20px; font-weight:bold; background:transparent;"
         )
-        min_btn.clicked.connect(self.showMinimized)
-        hdr.addWidget(min_btn)
+        wg_row.addWidget(self._wallet_gold_label)
+        wg_row.addSpacing(14)
+        wg_row.addWidget(QLabel("🥐"))
+        self._wallet_keys_label = QLabel(str(panel.shop.get_keys()))
+        self._wallet_keys_label.setStyleSheet(
+            "color:#e8b84d; font-size:20px; font-weight:bold; background:transparent;"
+        )
+        wg_row.addWidget(self._wallet_keys_label)
+        wg_row.addStretch(1)
+        bal.addLayout(wg_row)
+        self._pool_refresh_label = QLabel("")
+        self._pool_refresh_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._pool_refresh_label.setStyleSheet("color:#887755; font-size:10px; background:transparent;")
+        bal.addWidget(self._pool_refresh_label)
+        self._refresh_pool_countdown()
+        hdr.addLayout(bal, 1)
 
         close_btn = QPushButton("\u2716")
-        close_btn.setFixedSize(28, 28)
+        close_btn.setFixedSize(30, 30)
         close_btn.setStyleSheet(
-            "QPushButton{border:1px solid #661111;color:#ff4444;font-size:14px;"
-            "padding:0;border-radius:5px;background:rgba(30,5,0,200);min-height:0;min-width:0;}"
-            "QPushButton:hover{background:rgba(80,10,0,230);border-color:#cc2222;}"
+            "QPushButton{border:1px solid #661111;color:#ff6666;font-size:14px;"
+            "border-radius:6px;background:rgba(35,12,8,220);}"
+            "QPushButton:hover{background:rgba(80,25,15,240);border-color:#aa4444;}"
         )
-        close_btn.clicked.connect(self.close)
-        hdr.addWidget(close_btn)
+        close_btn.clicked.connect(self._close_shop)
+        hdr.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
         ml.addLayout(hdr)
 
-        # ── Wallet counters (золото/ключи) ──
-        wallet = QFrame()
-        wallet.setStyleSheet(
-            "QFrame{background:rgba(10,5,0,160);border:1px solid #886611;"
-            "border-radius:10px;}"
-        )
-        wl = QHBoxLayout(wallet)
-        wl.setContentsMargins(14, 10, 14, 10)
-        wl.setSpacing(14)
-        wl.addWidget(QLabel("🪙"))
-        self._wallet_gold_label = QLabel(str(self._panel.shop.get_gold()))
-        self._wallet_gold_label.setStyleSheet(
-            "color:#ffcc00; font-size:16px; font-weight:bold; background:transparent;"
-        )
-        wl.addWidget(self._wallet_gold_label)
-        sep = QLabel("│")
-        sep.setStyleSheet("color:#444; font-size:12px; background:transparent;")
-        wl.addWidget(sep)
-        wl.addWidget(QLabel("🥐"))
-        self._wallet_keys_label = QLabel(str(self._panel.shop.get_keys()))
-        self._wallet_keys_label.setStyleSheet(
-            "color:#dda644; font-size:16px; font-weight:bold; background:transparent;"
-        )
-        wl.addWidget(self._wallet_keys_label)
-        wl.addStretch(1)
-        ml.addWidget(wallet)
+        self._header_timer = QTimer(self)
+        self._header_timer.timeout.connect(self._refresh_pool_countdown)
+        self._header_timer.start(1000)
 
-        # ── Navigation ──
-        nav = QHBoxLayout()
-        nav.setSpacing(4)
-        nav_btns = []
-        for label, anchor in [("\U0001f6d2 Темы", "shop_themes"), ("\U0001f3b0 Рулетка", "shop_gacha"), ("\U0001f4b1 Обмен", "shop_exchange")]:
-            b = QPushButton(label)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet(
-                "QPushButton{color:#cc8844;background:rgba(30,12,5,200);border:1px solid #553311;"
-                "border-radius:4px;padding:5px 10px;font-size:11px;font-weight:bold;}"
-                "QPushButton:hover{background:rgba(50,20,10,230);border-color:#884422;}"
-            )
-            nav.addWidget(b)
-            nav_btns.append((b, anchor))
-        ml.addLayout(nav)
-
-        # ── Scroll area ──
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
         scroll_w = QWidget()
         scroll_w.setStyleSheet("background:transparent;")
         self._shop_layout = QVBoxLayout(scroll_w)
-        self._shop_layout.setContentsMargins(2, 2, 2, 2)
-        self._shop_layout.setSpacing(8)
+        self._shop_layout.setContentsMargins(2, 10, 2, 8)
+        self._shop_layout.setSpacing(12)
         scroll.setWidget(scroll_w)
-        ml.addWidget(scroll)
+        ml.addWidget(scroll, 1)
 
-        panel = self._panel
-
-        # ══ Секция 1: Темы ══
-        sec1 = QLabel("\U0001f6d2  МАГАЗИН ТЕМ")
+        sec1 = QLabel("\U0001f525  Темы дня")
         sec1.setObjectName("shop_themes")
         sec1.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        sec1.setStyleSheet("color:#cc8844; padding:4px 0; background:transparent;")
+        sec1.setStyleSheet("color:#cc9944; padding:4px 0; background:transparent;")
         self._shop_layout.addWidget(sec1)
-
-        pool_rem = panel.shop.pool_time_remaining()
-        mins = pool_rem // 60
-        self._pool_timer_label = QLabel(f"\u23f1 Обновление пула: {mins // 60}ч {mins % 60}м")
-        self._pool_timer_label.setStyleSheet("color:#666; font-size:10px; background:transparent;")
-        self._shop_layout.addWidget(self._pool_timer_label)
 
         self._shop_cards_container = QWidget()
         self._shop_cards_container.setStyleSheet("background:transparent;")
         from PyQt6.QtWidgets import QGridLayout
+
         self._shop_grid = QGridLayout(self._shop_cards_container)
-        self._shop_grid.setSpacing(6)
+        self._shop_grid.setSpacing(8)
         self._shop_grid.setContentsMargins(0, 0, 0, 0)
         self._build_shop_cards()
         self._shop_layout.addWidget(self._shop_cards_container)
 
-        # ══ Секция 2: Рулетка ══
-        sec2 = QLabel("\U0001f3b0  РУЛЕТКА")
+        sec2 = QLabel("\U0001f525  Адская рулетка")
         sec2.setObjectName("shop_gacha")
         sec2.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        sec2.setStyleSheet("color:#cc8844; padding:4px 0; background:transparent;")
+        sec2.setStyleSheet("color:#cc9944; padding:4px 0; background:transparent;")
         self._shop_layout.addWidget(sec2)
 
-        # Keyhole image area
-        import os
-        keyhole_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "keyhole.png")
-        if os.path.exists(keyhole_path):
-            kh_label = QLabel()
-            kh_pm = QPixmap(keyhole_path).scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            kh_label.setPixmap(kh_pm)
-            kh_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            kh_label.setStyleSheet("background:transparent;")
-            self._shop_layout.addWidget(kh_label)
+        gacha_row = QHBoxLayout()
+        gacha_row.setSpacing(4)
+        left_odds = QLabel(
+            "Карамелька — 8%\nЗолото (разное)\nНичего — 38%"
+        )
+        left_odds.setWordWrap(True)
+        left_odds.setStyleSheet("color:#998877; font-size:10px; background:transparent;")
+        left_odds.setFixedWidth(108)
+        gacha_row.addWidget(left_odds)
 
-        gacha_desc = QLabel("Потрать \U0001f950 ключ-круассан и испытай удачу!\nШансы: \U0001f36c Карамелька 8% \u2022 \U0001f4b0 Золото \u2022 \U0001f4a8 Ничего 38%")
-        gacha_desc.setWordWrap(True)
-        gacha_desc.setStyleSheet("color:#888; font-size:10px; padding:2px; background:transparent;")
-        self._shop_layout.addWidget(gacha_desc)
+        self._gacha_portal = InfernoGachaPortalWidget()
+        gacha_row.addWidget(self._gacha_portal, 1)
+
+        right_odds = QLabel(
+            "Стикер — 10%\nРедкие темы\nЗолото 1000"
+        )
+        right_odds.setWordWrap(True)
+        right_odds.setStyleSheet("color:#998877; font-size:10px; background:transparent;")
+        right_odds.setFixedWidth(108)
+        right_odds.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        gacha_row.addWidget(right_odds)
+        self._shop_layout.addLayout(gacha_row)
 
         self._gacha_result_label = QLabel("")
         self._gacha_result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._gacha_result_label.setStyleSheet("color:#ffcc00; font-size:14px; font-weight:bold; min-height:30px; background:transparent;")
+        self._gacha_result_label.setStyleSheet(
+            "color:#ffcc00; font-size:13px; font-weight:bold; min-height:26px; background:transparent;"
+        )
         self._shop_layout.addWidget(self._gacha_result_label)
 
-        spin_btn = QPushButton("\U0001f3b2  КРУТИТЬ  (1 \U0001f950)")
+        spin_btn = QPushButton("КРУТИТЬ  (1  ключ)")
         spin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        spin_btn.setFixedHeight(40)
+        spin_btn.setMinimumHeight(48)
         spin_btn.setStyleSheet(
-            "QPushButton{color:#fff;font-size:13px;font-weight:bold;border:2px solid #cc8844;"
-            "border-radius:8px;background:qlineargradient(y1:0,y2:1,stop:0 #aa5522,stop:1 #773311);}"
-            "QPushButton:hover{background:qlineargradient(y1:0,y2:1,stop:0 #cc6633,stop:1 #994422);border-color:#ffaa55;}"
-            "QPushButton:pressed{background:#662211;}"
+            "QPushButton{color:#fff;font-size:14px;font-weight:bold;border:2px solid #aa7722;"
+            "border-radius:10px;padding:10px;"
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #c84,stop:0.45 #a52,stop:1 #421);}"
+            "QPushButton:hover{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ea6,stop:0.5 #b73,stop:1 #632);border-color:#dcb066;}"
+            "QPushButton:pressed{background:#410;}"
         )
         spin_btn.clicked.connect(self._on_gacha_spin)
         self._shop_layout.addWidget(spin_btn)
 
-        # ── Pie chart showing gacha chances ──
-        self._chance_chart = _GachaChanceChart()
-        self._shop_layout.addWidget(self._chance_chart)
-
-        # ══ Секция 3: Обменник ══
-        sec3 = QLabel("\U0001f4b1  ОБМЕННИК")
+        sec3 = QLabel("\U0001f4c5  Ежедневные активности и обмен")
         sec3.setObjectName("shop_exchange")
         sec3.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        sec3.setStyleSheet("color:#cc8844; padding:4px 0; background:transparent;")
+        sec3.setStyleSheet("color:#cc9944; padding:8px 0 4px 0; background:transparent;")
         self._shop_layout.addWidget(sec3)
 
-        exch_btn = QPushButton("\U0001f504  Обменять 1 \U0001f950 \u2192 250 \U0001fa99")
-        exch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        exch_btn.setFixedHeight(34)
-        exch_btn.setStyleSheet(
-            "QPushButton{color:#dda644;font-size:11px;font-weight:bold;border:1px solid #886600;"
-            "border-radius:6px;background:rgba(40,20,0,200);}"
-            "QPushButton:hover{background:rgba(60,30,0,220);border-color:#bb8800;}"
-        )
-        exch_btn.clicked.connect(self._on_exchange_key)
-        self._shop_layout.addWidget(exch_btn)
-
+        daily_row = QHBoxLayout()
+        daily_row.setSpacing(8)
         self._free_gold_btn = QPushButton("\U0001f381  Бесплатное золото")
         self._free_gold_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._free_gold_btn.setFixedHeight(34)
+        self._free_gold_btn.setMinimumHeight(40)
+        self._free_gold_btn.setStyleSheet(
+            "QPushButton{color:#ddccaa;font-size:11px;font-weight:bold;border:1px solid #664422;"
+            "border-radius:8px;background:rgba(30,14,6,200);padding:8px;}"
+            "QPushButton:hover{background:rgba(50,22,10,230);border-color:#997755;}"
+        )
         self._free_gold_btn.clicked.connect(self._on_claim_free_gold)
-        self._shop_layout.addWidget(self._free_gold_btn)
+        daily_row.addWidget(self._free_gold_btn, 1)
 
-        self._free_key_btn = QPushButton("\U0001f511  Бесплатный ключ (раз в сутки)")
+        self._free_key_btn = QPushButton("\U0001f511  Бесплатный ключ")
         self._free_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._free_key_btn.setFixedHeight(34)
+        self._free_key_btn.setMinimumHeight(40)
+        self._free_key_btn.setStyleSheet(
+            "QPushButton{color:#ddccaa;font-size:11px;font-weight:bold;border:1px solid #664422;"
+            "border-radius:8px;background:rgba(30,14,6,200);padding:8px;}"
+            "QPushButton:hover{background:rgba(50,22,10,230);border-color:#997755;}"
+        )
         self._free_key_btn.clicked.connect(self._on_claim_free_key)
-        self._shop_layout.addWidget(self._free_key_btn)
+        daily_row.addWidget(self._free_key_btn, 1)
+        self._shop_layout.addLayout(daily_row)
         self._update_free_buttons()
+
+        exch_frame = QFrame()
+        exch_frame.setStyleSheet(
+            "QFrame{background:rgba(18,8,4,200);border:1px solid #553322;border-radius:10px;}"
+        )
+        el = QVBoxLayout(exch_frame)
+        el.setContentsMargins(10, 8, 10, 8)
+        el.setSpacing(6)
+        et = QLabel("Обменник")
+        et.setStyleSheet("color:#aa8855; font-size:11px; font-weight:bold;")
+        el.addWidget(et)
+        eb_row = QHBoxLayout()
+        eb_row.setSpacing(8)
+        eb1 = QPushButton("1 \U0001f950 \u2192 250 \U0001fa99")
+        eb1.setCursor(Qt.CursorShape.PointingHandCursor)
+        eb1.setStyleSheet(
+            "QPushButton{color:#dda644;font-size:10px;font-weight:bold;border:1px solid #775522;"
+            "border-radius:6px;background:rgba(40,18,6,220);padding:8px;}"
+            "QPushButton:hover{background:rgba(60,28,10,240);}"
+        )
+        eb1.clicked.connect(self._on_exchange_key)
+        eb2 = QPushButton(f"{EXCHANGE_GOLD_FOR_ONE_KEY} \U0001fa99 \u2192 1 \U0001f950")
+        eb2.setCursor(Qt.CursorShape.PointingHandCursor)
+        eb2.setStyleSheet(
+            "QPushButton{color:#dda644;font-size:10px;font-weight:bold;border:1px solid #775522;"
+            "border-radius:6px;background:rgba(40,18,6,220);padding:8px;}"
+            "QPushButton:hover{background:rgba(60,28,10,240);}"
+        )
+        eb2.clicked.connect(self._on_exchange_gold_to_key)
+        eb_row.addWidget(eb1, 1)
+        eb_row.addWidget(eb2, 1)
+        el.addLayout(eb_row)
+        self._shop_layout.addWidget(exch_frame)
 
         self._shop_exchange_label = QLabel("")
         self._shop_exchange_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._shop_exchange_label.setStyleSheet("color:#88cc44; font-size:11px; background:transparent;")
         self._shop_layout.addWidget(self._shop_exchange_label)
         panel._shop_exchange_label = self._shop_exchange_label
-
         self._shop_layout.addStretch()
-
-        # Navigation scroll-to
-        for btn, anchor in nav_btns:
-            btn.clicked.connect(lambda checked, a=anchor: self._scroll_to_section(a, scroll))
 
     def _update_wallet_labels(self):
         """Синхронизирует счетчики золота/ключей на шапке магазина."""
@@ -888,13 +1126,17 @@ class ShopWindow(QWidget):
         if hasattr(self, "_wallet_keys_label"):
             self._wallet_keys_label.setText(str(self._panel.shop.get_keys()))
 
-    def _scroll_to_section(self, anchor, scroll):
-        target = scroll.widget().findChild(QLabel, anchor)
-        if target:
-            scroll.ensureWidgetVisible(target, 0, 20)
+    @staticmethod
+    def _theme_accent_qcolor(theme: dict) -> QColor:
+        c = theme.get("colors", {})
+        prim = c.get("primary")
+        if isinstance(prim, str) and prim.startswith("#") and len(prim) >= 7:
+            return QColor(prim)
+        fc = c.get("fire_core", (200, 90, 45))
+        return QColor(int(fc[0]), int(fc[1]), int(fc[2]))
 
     def _build_shop_cards(self):
-        """Build theme cards in shop grid."""
+        """Карточки тем дня: превью-градиент, рамка цвета темы."""
         while self._shop_grid.count():
             item = self._shop_grid.takeAt(0)
             if item.widget():
@@ -909,49 +1151,77 @@ class ShopWindow(QWidget):
             if not theme:
                 continue
             owned = tid in purchased
+            accent = self._theme_accent_qcolor(theme)
+            glow = accent.name()
+            c = theme.get("colors", {})
+            top = c.get("bg_top", (32, 14, 10))
+            bot = c.get("bg_bot", (12, 6, 4))
             card = QFrame()
-            card.setFixedSize(150, 110)
+            card.setMinimumHeight(168)
+            card.setStyleSheet(
+                f"QFrame{{background:rgba(12,6,4,235);border:2px solid {glow};"
+                f"border-radius:10px;}}"
+                f"QFrame:hover{{border:2px solid #ffcc66;}}"
+            )
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(6, 6, 6, 6)
-            cl.setSpacing(2)
+            cl.setContentsMargins(8, 8, 8, 8)
+            cl.setSpacing(4)
 
             name_l = QLabel(theme.get("name", tid))
             name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_l.setStyleSheet("color:#ffcc00;font-size:10px;font-weight:bold;background:transparent;")
+            name_l.setStyleSheet("color:#ffdd99;font-size:11px;font-weight:bold;background:transparent;")
             name_l.setWordWrap(True)
             cl.addWidget(name_l)
 
+            prev = QLabel()
+            prev.setFixedHeight(72)
+            prev.setStyleSheet(
+                f"background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                f"stop:0 rgb({top[0]},{top[1]},{top[2]}),"
+                f"stop:1 rgb({bot[0]},{bot[1]},{bot[2]}));"
+                f"border-radius:8px; border: 1px solid rgba(255,200,100,40);"
+            )
+            cl.addWidget(prev)
+
             price = panel.shop.get_theme_price(tid)
             if owned:
-                status = QLabel("\u2705 Куплено")
-                status.setStyleSheet("color:#44cc44;font-size:9px;background:transparent;")
-                status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                cl.addWidget(status)
-                card.setStyleSheet(
-                    "QFrame{background:rgba(10,30,10,200);border:1px solid #44aa44;border-radius:6px;}"
+                price_l = QLabel("\u2705  В коллекции")
+                price_l.setStyleSheet("color:#66cc88;font-size:10px;background:transparent;")
+                price_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cl.addWidget(price_l)
+                app_btn = QPushButton("Применить")
+                app_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                app_btn.setStyleSheet(
+                    "QPushButton{color:#fff;font-size:10px;border:1px solid #558866;"
+                    "border-radius:5px;background:rgba(20,50,30,220);padding:5px;}"
+                    "QPushButton:hover{background:rgba(35,70,45,240);}"
                 )
+                app_btn.clicked.connect(lambda checked, t=tid: self._apply_theme_from_shop(t))
+                cl.addWidget(app_btn)
             else:
-                price_l = QLabel(f"\U0001fa99 {price}")
-                price_l.setStyleSheet("color:#dda644;font-size:10px;background:transparent;")
+                price_l = QLabel(f"\U0001fa99  {price}")
+                price_l.setStyleSheet("color:#dda644;font-size:11px;background:transparent;")
                 price_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cl.addWidget(price_l)
                 buy_btn = QPushButton("Купить")
                 buy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 buy_btn.setStyleSheet(
                     "QPushButton{color:#fff;font-size:10px;border:1px solid #886600;"
-                    "border-radius:4px;background:rgba(60,30,0,200);padding:3px;}"
-                    "QPushButton:hover{background:rgba(90,45,0,220);}"
+                    "border-radius:5px;background:rgba(60,30,0,220);padding:5px;}"
+                    "QPushButton:hover{background:rgba(90,45,0,240);}"
                 )
                 buy_btn.clicked.connect(lambda checked, t=tid, p=price: self._buy_theme(t, p))
                 cl.addWidget(buy_btn)
-                card.setStyleSheet(
-                    "QFrame{background:rgba(20,10,0,200);border:1px solid #553311;border-radius:6px;}"
-                )
+
             self._shop_grid.addWidget(card, row, col)
             col += 1
             if col >= 3:
                 col = 0
                 row += 1
+
+    def _apply_theme_from_shop(self, tid: str):
+        self._panel._select_theme(tid)
+        self._panel._refresh_themes()
 
     def _buy_theme(self, tid, price):
         panel = self._panel
@@ -1004,6 +1274,7 @@ class ShopWindow(QWidget):
             self._gacha_result_label.setText(f"💰 +{val} золота!")
             clr = "#ffcc00" if val >= 500 else "#dda644"
             self._gacha_result_label.setStyleSheet(f"color:{clr}; font-size:14px; font-weight:bold; min-height:30px; background:transparent;")
+            panel._animate_currency_add(int(val), "gold")
         elif rtype == "sticker":
             sid = result.get("sticker_id", "sticker_star")
             self._gacha_result_label.setText(f"🏷 Наклейка получена!")
@@ -1017,20 +1288,41 @@ class ShopWindow(QWidget):
 
 
     def _on_exchange_key(self):
+        from modules.shop_manager import EXCHANGE_GOLD_PER_KEY
+
         panel = self._panel
         if panel.shop.exchange_key_to_gold():
             panel._update_currency_display()
+            panel._animate_currency_add(EXCHANGE_GOLD_PER_KEY, "gold")
             self._shop_exchange_label.setText("✅ +250 🪙")
             QTimer.singleShot(2000, lambda: self._shop_exchange_label.setText(""))
         else:
             self._shop_exchange_label.setText("❌ Нет ключей")
             self._shop_exchange_label.setStyleSheet("color:#ff4444; font-size:11px; background:transparent;")
 
+    def _on_exchange_gold_to_key(self):
+        panel = self._panel
+        if panel.shop.exchange_gold_to_key():
+            panel._update_currency_display()
+            self._shop_exchange_label.setText(f"✅ +1 ключ (−{EXCHANGE_GOLD_FOR_ONE_KEY} 🪙)")
+            self._shop_exchange_label.setStyleSheet("color:#88cc44; font-size:11px; background:transparent;")
+            QTimer.singleShot(2500, lambda: self._shop_exchange_label.setText(""))
+        else:
+            self._shop_exchange_label.setText(f"❌ Нужно {EXCHANGE_GOLD_FOR_ONE_KEY} золота")
+            self._shop_exchange_label.setStyleSheet("color:#ff6666; font-size:11px; background:transparent;")
+            QTimer.singleShot(
+                2200,
+                lambda: self._shop_exchange_label.setStyleSheet(
+                    "color:#88cc44; font-size:11px; background:transparent;"
+                ),
+            )
+
     def _on_claim_free_gold(self):
         panel = self._panel
         if panel.shop.can_claim_free_gold():
             amt = panel.shop.claim_free_gold()
             panel._update_currency_display()
+            panel._animate_currency_add(amt, "gold")
             self._shop_exchange_label.setText(f"🎁 +{amt} 🪙")
             QTimer.singleShot(2000, lambda: self._shop_exchange_label.setText(""))
         self._update_free_buttons()
@@ -1062,41 +1354,6 @@ class ShopWindow(QWidget):
                 self._free_key_btn.setText("🔑 Ключ получен сегодня")
             else:
                 self._free_key_btn.setText("🔑 Бесплатный ключ (раз в сутки)")
-
-
-class _GachaChanceChart(QWidget):
-    """Simple pie chart showing gacha drop chances."""
-
-    def __init__(self):
-        super().__init__()
-        self.setFixedSize(160, 160)
-        self.setStyleSheet("background:transparent;")
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(10, 10, 140, 140)
-        # Chances: Nothing 38%, Gold(small) 30%, Gold(medium) 15%, Gold(big) 9%, Candy 8%
-        segments = [
-            (38, QColor("#333333"), "Ничего 38%"),
-            (30, QColor("#aa8822"), "Золото(м) 30%"),
-            (15, QColor("#ccaa33"), "Золото(с) 15%"),
-            (9, QColor("#ffcc00"), "Золото(б) 9%"),
-            (8, QColor("#ff6699"), "Карамелька 8%"),
-        ]
-        start = 0
-        for pct, color, label in segments:
-            span = int(pct * 3.6 * 16)
-            p.setBrush(QBrush(color))
-            p.setPen(QPen(QColor("#000000"), 1))
-            p.drawPie(rect, start, span)
-            start += span
-
-        # Legend
-        p.setPen(QColor("#999999"))
-        p.setFont(QFont("Segoe UI", 7))
-        y_off = 155
-        p.end()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1794,7 +2051,7 @@ class DictatorControlPanel(QMainWindow):
         if not hasattr(self, '_star_pixmaps'):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
-            self._star_pixmaps = [QPixmap(os.path.join(base, f)) for f in ("star1.png", "star2.png")]
+            self._star_pixmaps = [load_pixmap(os.path.join(base, f)) for f in ("star1.png", "star2.png")]
             self._star_pixmaps = [pm for pm in self._star_pixmaps if not pm.isNull()]
         if not self._star_pixmaps:
             return
@@ -2076,7 +2333,7 @@ class DictatorControlPanel(QMainWindow):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
             name = self._current_theme.get("counter_bg_image", "")
-            self._counter_bg_pixmap = QPixmap(os.path.join(base, name))
+            self._counter_bg_pixmap = load_pixmap(os.path.join(base, name))
         pm = self._counter_bg_pixmap
         if pm.isNull():
             return
@@ -2117,7 +2374,7 @@ class DictatorControlPanel(QMainWindow):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
             names = self._current_theme.get("bg_images", [])
-            pms = [QPixmap(os.path.join(base, n)) for n in names]
+            pms = [load_pixmap(os.path.join(base, n)) for n in names]
             setattr(self, cache_key, [pm for pm in pms if not pm.isNull()])
         pixmaps = getattr(self, cache_key)
         if not pixmaps:
@@ -2160,7 +2417,7 @@ class DictatorControlPanel(QMainWindow):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
             name = self._current_theme.get("bg_center_image", "")
-            self._center_pixmap = QPixmap(os.path.join(base, name))
+            self._center_pixmap = load_pixmap(os.path.join(base, name))
         pm = self._center_pixmap
         if pm.isNull():
             return
@@ -2180,7 +2437,7 @@ class DictatorControlPanel(QMainWindow):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
             name = self._current_theme.get("bg_image_file", "")
-            self._bg_file_pixmap = QPixmap(os.path.join(base, name))
+            self._bg_file_pixmap = load_pixmap(os.path.join(base, name))
         pm = self._bg_file_pixmap
         if pm.isNull():
             return
@@ -2428,9 +2685,9 @@ class DictatorControlPanel(QMainWindow):
         if not hasattr(self, '_eye_pixmaps'):
             import os
             base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
-            pm_open = QPixmap(os.path.join(base, "eye1.png"))
-            pm_mid = QPixmap(os.path.join(base, "eye_mid.png"))
-            pm_closed = QPixmap(os.path.join(base, "eye2.png"))
+            pm_open = load_pixmap(os.path.join(base, "eye1.png"))
+            pm_mid = load_pixmap(os.path.join(base, "eye_mid.png"))
+            pm_closed = load_pixmap(os.path.join(base, "eye2.png"))
             self._eye_pixmaps = {
                 "open": pm_open if not pm_open.isNull() else None,
                 "mid": pm_mid if not pm_mid.isNull() else None,
@@ -3697,7 +3954,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self._ach_tab_index = self.tabs.count()
         self.tabs.addTab(self._tab_achievements(), f"\U0001f4c2 Файлы\n{self._user_nickname}")
         themes_w = self._tab_themes()
-        self.tabs.addTab(themes_w, "\U0001f525 Огни")
+        self.tabs.addTab(themes_w, "\U0001f525 Темы")
         self._tab_idx_themes = self.tabs.count() - 1
         # Лог и Коды — доступны через кнопки в настройках (отдельные окна)
         self.tabs.addTab(self._tab_settings(), "\u2699 Настр.")
@@ -3708,6 +3965,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
 
             self.tabs.addTab(LeaderboardTab(self._cloud_service), "\U0001f3c6 Топ")
             self._tab_idx_leaderboard = self.tabs.count() - 1
+        self.tabs.tabBar().tabBarClicked.connect(self._on_tab_bar_clicked)
         dl.addWidget(self.tabs)
         ml.addWidget(self._detail)
 
@@ -3719,6 +3977,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._fire_border.setGeometry(0, 0, self.width(), self.height())
+        self._sync_shop_overlay_geometry()
 
     def _toggle_expand(self):
         self._emoji_boom_from_widget(self.btn_expand, 14)
@@ -4072,6 +4331,105 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         if target:
             scroll.ensureWidgetVisible(target, 0, 20)
 
+    def _update_free_gold_btn(self):
+        if not hasattr(self, "_free_gold_btn"):
+            return
+        can = self.shop.can_claim_free_gold()
+        self._free_gold_btn.setEnabled(can)
+        if not can:
+            secs = self.shop.free_gold_seconds_remaining()
+            m, s = divmod(secs, 60)
+            self._free_gold_btn.setText(f"🎁 Золото через {m}м {s}с")
+        else:
+            self._free_gold_btn.setText("🎁 Бесплатное золото")
+
+    def _update_free_key_btn(self):
+        if not hasattr(self, "_free_key_btn"):
+            return
+        can = self.shop.can_claim_free_key()
+        self._free_key_btn.setEnabled(can)
+        if not can:
+            self._free_key_btn.setText("🔑 Ключ получен сегодня")
+        else:
+            self._free_key_btn.setText("🔑 Бесплатный ключ (раз в сутки)")
+
+    def _on_gacha_spin(self):
+        """Рулетка (вкладка магазина в панели, если используется)."""
+        if self.shop.get_keys() < 1:
+            self._gacha_result_label.setText("❌ Недостаточно ключей!")
+            self._gacha_result_label.setStyleSheet(
+                "color:#ff4444; font-size:14px; font-weight:bold; min-height:30px;"
+            )
+            return
+        result = self.shop.spin_gacha()
+        if not result:
+            return
+        self.config["_gacha_spins"] = self.config.get("_gacha_spins", 0) + 1
+        save_config(self.config)
+        self._update_currency_display()
+        rtype = result.get("type", "nothing")
+        val = result.get("value", 0)
+        if rtype == "theme":
+            t = get_theme_by_id(val) if val else None
+            name = t["name"] if t else "Тема"
+            self._gacha_result_label.setText(f"🍬 {name} разблокирована!")
+            self._gacha_result_label.setStyleSheet(
+                "color:#ff44ff; font-size:14px; font-weight:bold; min-height:30px;"
+            )
+            self._refresh_themes()
+        elif rtype == "gold":
+            self._gacha_result_label.setText(f"💰 +{val} золота!")
+            clr = "#ffcc00" if val >= 500 else "#dda644"
+            self._gacha_result_label.setStyleSheet(
+                f"color:{clr}; font-size:14px; font-weight:bold; min-height:30px;"
+            )
+            self._animate_currency_add(int(val), "gold")
+        elif rtype == "sticker":
+            self._gacha_result_label.setText("🏷 Наклейка получена!")
+            self._gacha_result_label.setStyleSheet(
+                "color:#44ccff; font-size:14px; font-weight:bold; min-height:30px;"
+            )
+            self.config["_sticker_count"] = self.config.get("_sticker_count", 0) + 1
+            save_config(self.config)
+        else:
+            self._gacha_result_label.setText("💨 Пусто...")
+            self._gacha_result_label.setStyleSheet(
+                "color:#555; font-size:14px; font-weight:bold; min-height:30px;"
+            )
+
+    def _on_exchange_key(self):
+        from modules.shop_manager import EXCHANGE_GOLD_PER_KEY
+
+        if self.shop.exchange_key_to_gold():
+            self._update_currency_display()
+            self._animate_currency_add(EXCHANGE_GOLD_PER_KEY, "gold")
+            if hasattr(self, "_shop_exchange_label") and self._shop_exchange_label:
+                self._shop_exchange_label.setText("✅ +250 🪙")
+                QTimer.singleShot(2000, lambda: self._shop_exchange_label.setText(""))
+        else:
+            if hasattr(self, "_shop_exchange_label") and self._shop_exchange_label:
+                self._shop_exchange_label.setText("❌ Нет ключей")
+                self._shop_exchange_label.setStyleSheet("color:#ff4444; font-size:11px;")
+
+    def _on_claim_free_gold(self):
+        if self.shop.can_claim_free_gold():
+            amt = self.shop.claim_free_gold()
+            self._update_currency_display()
+            self._animate_currency_add(amt, "gold")
+            if hasattr(self, "_shop_exchange_label") and self._shop_exchange_label:
+                self._shop_exchange_label.setText(f"🎁 +{amt} 🪙")
+                QTimer.singleShot(2000, lambda: self._shop_exchange_label.setText(""))
+        self._update_free_gold_btn()
+
+    def _on_claim_free_key(self):
+        if self.shop.can_claim_free_key():
+            self.shop.claim_free_key()
+            self._update_currency_display()
+            if hasattr(self, "_shop_exchange_label") and self._shop_exchange_label:
+                self._shop_exchange_label.setText("🔑 +1 ключ!")
+                QTimer.singleShot(2000, lambda: self._shop_exchange_label.setText(""))
+        self._update_free_key_btn()
+
     def _open_shop_window(self):
         gate = getattr(self, "_calc_content_gate", None)
         can_shop = True
@@ -4091,15 +4449,23 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             flash.setGeometry(0, 60, self.width(), 140)
             flash.show()
             return
-        if hasattr(self, '_shop_win') and self._shop_win and self._shop_win.isVisible():
-            self._shop_win.raise_()
-            self._shop_win.activateWindow()
+        cw = self.centralWidget()
+        if cw is None:
             return
-        self._shop_win = ShopWindow(self)
-        # Position near the panel
-        pos = self.pos()
-        self._shop_win.move(pos.x() + self.width() + 10, pos.y())
+        if getattr(self, "_shop_win", None) is None:
+            self._shop_win = ShopWindow(self, parent=cw)
+        self._shop_win._update_wallet_labels()
+        self._shop_win._refresh_pool_countdown()
+        self._shop_win._build_shop_cards()
+        self._shop_win.setGeometry(0, 0, cw.width(), cw.height())
         self._shop_win.show()
+        self._shop_win.raise_()
+
+    def _sync_shop_overlay_geometry(self):
+        sw = getattr(self, "_shop_win", None)
+        cw = self.centralWidget()
+        if sw is not None and cw is not None and sw.isVisible():
+            sw.setGeometry(0, 0, cw.width(), cw.height())
 
     def _build_shop_cards(self):
         """Построить карточки тем в магазине."""
@@ -4145,7 +4511,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         if icon_path:
             # Создаём круглый пиксмап: иконка внутри круга
             from PyQt6.QtGui import QPainter as _QP2, QPainterPath
-            raw = QPixmap(icon_path).scaled(ICON_SZ - 6, ICON_SZ - 6,
+            raw = load_pixmap(icon_path).scaled(ICON_SZ - 6, ICON_SZ - 6,
                 Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             circle_pm = QPixmap(ICON_SZ, ICON_SZ)
             circle_pm.fill(QColor(0, 0, 0, 0))
@@ -4490,9 +4856,9 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         """Наклейка MSN bage — обёртка над универсальным _spawn_sticker."""
         self._spawn_sticker("bage.png", remove_bg="white", action="modern_windows")
 
-    def _build_sticker_pixmap(self, image_file, remove_bg=None):
-        """QPixmap наклейки из assets или None."""
-        from PyQt6.QtGui import QPainterPath, QTransform
+    def _build_sticker_base_pixmap(self, image_file, remove_bg=None, scale_mul: float = 1.0):
+        """Базовая наклейка (без поворота в QPixmap — угол задаётся в FloatingStickerWindow)."""
+        from PyQt6.QtGui import QPainterPath
 
         img_path = Path(BASE_DIR) / "assets" / image_file
         img = QImage(str(img_path))
@@ -4524,15 +4890,21 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
             mp.end()
             img = mask
         pm = QPixmap.fromImage(img)
-        scale = random.uniform(1.0, 1.5)
-        sz = int(140 * scale)
+        sz = int(140 * max(0.35, min(2.5, scale_mul)))
         pm = pm.scaled(sz, sz, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        angle = random.uniform(-20, 20)
-        pm = pm.transformed(QTransform().rotate(angle), Qt.TransformationMode.SmoothTransformation)
         return pm
+
+    def _build_sticker_pixmap(self, image_file, remove_bg=None):
+        """Случайный масштаб (совместимость со старыми вызовами)."""
+        scale = random.uniform(1.0, 1.5)
+        return self._build_sticker_base_pixmap(image_file, remove_bg, scale_mul=scale)
 
     def _codes_drop_zones_global(self):
         zones = []
+        field = getattr(self, "_codes_sticker_field", None)
+        if field is not None and field.isVisible():
+            gp = field.mapToGlobal(QPoint(0, 0))
+            zones.append(QRect(gp, field.size()))
         tw = getattr(self, "_codes_tab_widget", None)
         if tw is not None:
             zones.append(
@@ -4550,24 +4922,42 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         return False
 
     def _floating_sticker_default_global_pos(self, w: int, h: int) -> tuple[int, int]:
-        ref = getattr(self, "_codes_window", None)
-        if ref is not None and ref.isVisible():
-            g = ref.frameGeometry()
-        elif getattr(self, "_codes_tab_widget", None) is not None:
-            tw = self._codes_tab_widget
-            g = QRect(tw.mapToGlobal(QPoint(0, 0)), QSize(max(1, tw.width()), max(1, tw.height())))
+        field = getattr(self, "_codes_sticker_field", None)
+        if field is not None and field.isVisible():
+            gp = field.mapToGlobal(QPoint(0, 0))
+            g = QRect(gp, field.size())
         else:
-            g = self.frameGeometry()
+            ref = getattr(self, "_codes_window", None)
+            if ref is not None and ref.isVisible():
+                g = ref.frameGeometry()
+            elif getattr(self, "_codes_tab_widget", None) is not None:
+                tw = self._codes_tab_widget
+                g = QRect(tw.mapToGlobal(QPoint(0, 0)), QSize(max(1, tw.width()), max(1, tw.height())))
+            else:
+                g = self.frameGeometry()
         c = g.center()
         return c.x() - w // 2, c.y() - h // 2
 
-    def _update_floating_sticker_pos(self, sid, x: int, y: int):
+    def _update_floating_sticker_record(
+        self, sid, x=None, y=None, angle=None, scale=None
+    ):
+        if not sid:
+            return
         for entry in self.config.get("floating_stickers") or []:
             if entry.get("id") == sid:
-                entry["x"] = int(x)
-                entry["y"] = int(y)
+                if x is not None:
+                    entry["x"] = int(x)
+                if y is not None:
+                    entry["y"] = int(y)
+                if angle is not None:
+                    entry["angle"] = float(angle)
+                if scale is not None:
+                    entry["scale"] = float(scale)
                 save_config(self.config)
                 return
+
+    def _update_floating_sticker_pos(self, sid, x: int, y: int):
+        self._update_floating_sticker_record(sid, x=x, y=y)
 
     def _remove_floating_sticker_by_id(self, sid):
         if not sid:
@@ -4595,32 +4985,91 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
 
     def _restore_floating_stickers(self):
         for rec in list(self.config.get("floating_stickers") or []):
-            pm = self._build_sticker_pixmap(rec.get("file"), rec.get("remove_bg"))
+            pm = self._build_sticker_base_pixmap(rec.get("file"), rec.get("remove_bg"), 1.0)
             if pm is None or pm.isNull():
                 continue
             sid = rec.get("id") or str(uuid.uuid4())
             rec["id"] = sid
+            ang = float(rec.get("angle", 0.0))
+            sc = float(rec.get("scale", 1.0))
             meta = {
                 "id": sid,
                 "file": rec.get("file"),
                 "remove_bg": rec.get("remove_bg"),
                 "action": rec.get("action"),
+                "angle": ang,
+                "scale": sc,
             }
             win = FloatingStickerWindow(self, pm, meta)
-            win.move(int(rec.get("x", 120)), int(rec.get("y", 120)))
+            win._angle = ang
+            win._scale = max(0.2, min(3.5, sc))
+            win._apply_transform_geometry()
+            x, y = self._floating_sticker_default_global_pos(win.width(), win.height())
+            win.move(x, y)
             win.show()
             self._floating_sticker_windows.append(win)
+            self._update_floating_sticker_record(sid, x=x, y=y, angle=win._angle, scale=win._scale)
         save_config(self.config)
+        QTimer.singleShot(150, self._layout_stickers_in_codes_field)
+
+    def _layout_stickers_in_codes_field(self):
+        """Раскладывает стикеры по полю секретных кодов (или запасной области панели)."""
+        wins = list(getattr(self, "_floating_sticker_windows", []) or [])
+        if not wins:
+            return
+        field = getattr(self, "_codes_sticker_field", None)
+        if field is not None and field.isVisible():
+            g0 = field.mapToGlobal(QPoint(0, 0))
+            rect = QRect(g0, field.size())
+        else:
+            cw = getattr(self, "_codes_window", None)
+            if cw is not None and cw.isVisible():
+                fg = cw.frameGeometry()
+                rect = QRect(fg.x() + 10, fg.y() + 130, max(40, fg.width() - 20), max(80, fg.height() - 150))
+            else:
+                fg = self.frameGeometry()
+                rect = QRect(
+                    fg.x() + 24,
+                    fg.y() + fg.height() // 2,
+                    max(60, fg.width() - 48),
+                    max(100, fg.height() // 3),
+                )
+        cols = 3
+        n = len(wins)
+        rows = max(1, (n + cols - 1) // cols)
+        cell_w = max(1, rect.width() // cols)
+        cell_h = max(1, rect.height() // rows)
+        for i, win in enumerate(wins):
+            col = i % cols
+            row = i // cols
+            x = rect.x() + col * cell_w + max(0, (cell_w - win.width()) // 2)
+            y = rect.y() + row * cell_h + max(0, (cell_h - win.height()) // 2)
+            win.move(x, y)
+            sid = win._meta.get("id")
+            if sid:
+                self._update_floating_sticker_record(sid, x=x, y=y)
 
     def _spawn_sticker(self, image_file, remove_bg=None, action=None):
         """Плавающий стикер (сохраняется в config); перетащить в зону кодов — убрать."""
-        pm = self._build_sticker_pixmap(image_file, remove_bg)
+        pm = self._build_sticker_base_pixmap(image_file, remove_bg, 1.0)
         if pm is None or pm.isNull():
             return
         sid = str(uuid.uuid4())
-        meta = {"id": sid, "file": image_file, "remove_bg": remove_bg, "action": action}
-        x, y = self._floating_sticker_default_global_pos(pm.width(), pm.height())
+        angle = random.uniform(-22, 22)
+        scale = random.uniform(0.85, 1.45)
+        meta = {
+            "id": sid,
+            "file": image_file,
+            "remove_bg": remove_bg,
+            "action": action,
+            "angle": angle,
+            "scale": scale,
+        }
         win = FloatingStickerWindow(self, pm, meta)
+        win._angle = angle
+        win._scale = scale
+        win._apply_transform_geometry()
+        x, y = self._floating_sticker_default_global_pos(win.width(), win.height())
         win.move(x, y)
         win.show()
         self._floating_sticker_windows.append(win)
@@ -4628,6 +5077,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         lst.append({**meta, "x": x, "y": y})
         self.config["_sticker_count"] = len(self._floating_sticker_windows)
         save_config(self.config)
+        QTimer.singleShot(50, self._layout_stickers_in_codes_field)
 
     def _animate_currency_add(self, amount, currency_type="gold"):
         """Animate currency addition with floating text and counter increment."""
@@ -4887,9 +5337,11 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         for _ in range(3):
             btn = QPushButton("—")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setMinimumHeight(48)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             btn.setStyleSheet(
                 "QPushButton{color:#cc8844;background:rgba(20,8,5,200);border:1px solid #553311;"
-                "border-radius:6px;font-size:12px;font-weight:bold;padding:10px;}"
+                "border-radius:6px;font-size:12px;font-weight:bold;padding:12px 10px;}"
                 "QPushButton:hover{border-color:#884422;color:#ffaa55;background:rgba(30,12,8,220);}"
             )
             btn.setEnabled(False)
@@ -4921,7 +5373,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         sep.setStyleSheet("background:#333;")
         l.addWidget(sep)
 
-        gate_hdr = QLabel("🔒 Дозированное открытие контента")
+        gate_hdr = QLabel("📊 Прогресс")
         gate_hdr.setStyleSheet("color:#cc8844; font-size:12px; font-weight:bold; padding:2px 0;")
         l.addWidget(gate_hdr)
 
@@ -5027,39 +5479,50 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         mercy_total = int(self.stats.mercy_total)
 
         stats_twos_req = 2
-        stats_mercy_req = 5
-        themes_twos_req = 15
+        stats_mercy_req = 2
+        themes_twos_req = 10
         shop_twos_req = 20
-        leaderboard_twos_req = 25
+        leaderboard_twos_req = 30
 
-        # Статистика: 2 двойки + 5 помилований
+        gray = "color:#555555; font-size:11px; font-weight:bold;"
+        lit = "color:#ffcc00; font-size:11px; font-weight:bold;"
+
+        # Статистика: 2 двойки + 2 помилования
         stats_ok = total_twos >= stats_twos_req and mercy_total >= stats_mercy_req
         twos_pct = min(1.0, total_twos / max(1, stats_twos_req))
         mercy_pct = min(1.0, mercy_total / max(1, stats_mercy_req))
-        # прогресс берём как "минимум требований" (честно для AND-условия)
         stats_prog = min(twos_pct, mercy_pct)
         self._gate_stats_label.setText(
             f"Статистика: {'✅' if stats_ok else '🔒'} {total_twos}/{stats_twos_req} двойки и {mercy_total}/{stats_mercy_req} помилования"
         )
+        self._gate_stats_label.setStyleSheet(gray if not stats_ok else lit)
         self._gate_stats_pb.setValue(int(stats_prog * 100))
 
-        # Огни: 15 двоек
         themes_ok = total_twos >= themes_twos_req
         themes_prog = min(1.0, total_twos / max(1, themes_twos_req))
-        self._gate_themes_label.setText(f"Огни: {'✅' if themes_ok else '🔒'} {total_twos}/{themes_twos_req} двойки")
+        self._gate_themes_label.setText(
+            f"Темы: {'✅' if themes_ok else '🔒'} {total_twos}/{themes_twos_req} двойки"
+        )
+        self._gate_themes_label.setStyleSheet(
+            gray if not themes_ok else "color:#cc66ff; font-size:11px; font-weight:bold;"
+        )
         self._gate_themes_pb.setValue(int(themes_prog * 100))
 
-        # Магазин: 20 двоек
         shop_ok = total_twos >= shop_twos_req
         shop_prog = min(1.0, total_twos / max(1, shop_twos_req))
         self._gate_shop_label.setText(f"Магазин: {'✅' if shop_ok else '🔒'} {total_twos}/{shop_twos_req} двойки")
+        self._gate_shop_label.setStyleSheet(
+            gray if not shop_ok else "color:#dda644; font-size:11px; font-weight:bold;"
+        )
         self._gate_shop_pb.setValue(int(shop_prog * 100))
 
-        # Лидерборд (вкладка «Топ»): 25 двоек
         lb_ok = total_twos >= leaderboard_twos_req
         lb_prog = min(1.0, total_twos / max(1, leaderboard_twos_req))
         self._gate_leaderboard_label.setText(
             f"Топ (лидерборд): {'✅' if lb_ok else '🔒'} {total_twos}/{leaderboard_twos_req} двойки"
+        )
+        self._gate_leaderboard_label.setStyleSheet(
+            gray if not lb_ok else "color:#ffaa88; font-size:11px; font-weight:bold;"
         )
         self._gate_leaderboard_pb.setValue(int(lb_prog * 100))
 
@@ -5079,14 +5542,10 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         total_twos = int(self.stats.total)
         mercy_total = int(self.stats.mercy_total)
         return {
-            # Статистика: 2 двойки + 5 помилований
-            "stats": total_twos >= 2 and mercy_total >= 5,
-            # Огни: 15 двоек
-            "themes": total_twos >= 15,
-            # Магазин: 20 двоек
+            "stats": total_twos >= 2 and mercy_total >= 2,
+            "themes": total_twos >= 10,
             "shop": total_twos >= 20,
-            # Вкладка «Топ» (лидерборд): 25 двоек
-            "leaderboard": total_twos >= 25,
+            "leaderboard": total_twos >= 30,
         }
 
     def _apply_content_gate(self):
@@ -5132,7 +5591,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                 self.tabs.setTabEnabled(self._tab_idx_themes, can_themes)
                 self.tabs.setTabText(
                     self._tab_idx_themes,
-                    "\U0001f525 🔒 Огни" if not can_themes else "\U0001f525 Огни"
+                    "\U0001f525 🔒 Темы" if not can_themes else "\U0001f525 Темы"
                 )
             if self._tab_idx_leaderboard is not None:
                 can_lb = gate.get("leaderboard", False)
@@ -5148,6 +5607,45 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                 self._confetti_boom_at_center(220 if k != "shop" else 240)
 
         self._content_gate_prev = gate
+
+    def _on_tab_bar_clicked(self, index: int):
+        """Клик по заблокированной вкладке: предупреждение, сколько двоек осталось."""
+        gate = self._calc_content_gate()
+        total_twos = int(self.stats.total)
+        mercy_total = int(self.stats.mercy_total)
+        if self._tab_idx_stats is not None and index == self._tab_idx_stats and not gate["stats"]:
+            need_t = max(0, 2 - total_twos)
+            need_m = max(0, 2 - mercy_total)
+            parts = []
+            if need_t:
+                parts.append(f"ещё {need_t} дв.")
+            if need_m:
+                parts.append(f"ещё {need_m} помил.")
+            extra = ", ".join(parts) if parts else "условия выполнены — перезапусти вкладку"
+            QMessageBox.information(
+                self,
+                "Закрыто",
+                f"Статистика откроется при 2 двойках и 2 помилованиях.\nНе хватает: {extra}.",
+            )
+            return
+        if self._tab_idx_themes is not None and index == self._tab_idx_themes and not gate["themes"]:
+            need = max(0, 10 - total_twos)
+            QMessageBox.information(
+                self,
+                "Закрыто",
+                f"Темы откроются при 10 двойках.\nОсталось ещё {need} двоек.",
+            )
+            return
+        if self._tab_idx_leaderboard is not None and index == self._tab_idx_leaderboard and not gate.get(
+            "leaderboard", False
+        ):
+            need = max(0, 30 - total_twos)
+            QMessageBox.information(
+                self,
+                "Закрыто",
+                f"Лидерборд откроется при 30 двойках.\nОсталось ещё {need} двоек.",
+            )
+            return
 
     def _confetti_boom_at_center(self, count=220):
         """Конфетти от центра панели."""
@@ -5198,10 +5696,11 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         if hasattr(self, '_codes_window') and self._codes_window and self._codes_window.isVisible():
             self._codes_window.raise_()
             self._codes_window.activateWindow()
+            QTimer.singleShot(0, self._layout_stickers_in_codes_field)
             return
         self._codes_window = QWidget()
         self._codes_window.setWindowTitle("INFERNO — Секретные коды")
-        self._codes_window.setFixedSize(420, 500)
+        self._codes_window.setFixedSize(420, 620)
         self._codes_window.setStyleSheet("background:rgb(15,5,5);")
         vl = QVBoxLayout(self._codes_window); vl.setContentsMargins(6, 6, 6, 6)
         # Пересоздаём UI кодов
@@ -5235,9 +5734,19 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
         self._code_result.setStyleSheet("color:#666; font-size:11px; padding:6px;")
         self._code_result.setWordWrap(True)
         vl.addWidget(self._code_result)
-        vl.addStretch()
+        sf_hdr = QLabel("Поле стикеров")
+        sf_hdr.setStyleSheet("color:#775533; font-size:11px; font-weight:bold; padding-top:4px;")
+        vl.addWidget(sf_hdr)
+        self._codes_sticker_field = QFrame()
+        self._codes_sticker_field.setMinimumHeight(210)
+        self._codes_sticker_field.setStyleSheet(
+            "QFrame{background:rgba(25,8,5,200);border:2px dashed #664422;border-radius:10px;}"
+        )
+        vl.addWidget(self._codes_sticker_field)
+        vl.addStretch(1)
         self._codes_window.show()
         self._code_input.setFocus()
+        QTimer.singleShot(0, self._layout_stickers_in_codes_field)
 
     # ── Callbacks ─────────────────────────────────────────────
     def _on_bg_opacity(self, v):
@@ -5680,7 +6189,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                         )
                     elif icon_path:
                         icon_sz = 45 if t.get("id") == "modern_windows" else 50 if t.get("category") == "classic" else 40
-                        pm = QPixmap(icon_path).scaled(icon_sz, icon_sz, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        pm = load_pixmap(icon_path).scaled(icon_sz, icon_sz, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                         preview.setPixmap(pm)
                         preview.setScaledContents(False)
                         preview.setStyleSheet(f"border:2px solid {t['colors']['border']};border-radius:6px;background:rgba(0,0,0,150);")
@@ -6335,7 +6844,7 @@ QPushButton#imgBtnMercy:pressed, QPushButton#imgBtnColor:pressed {
                 img_name = btn_imgs.get(key)
                 if img_name:
                     img_path = os.path.join(base, img_name)
-                    pm = QPixmap(img_path)
+                    pm = load_pixmap(img_path)
                     if not pm.isNull():
                         btn.setObjectName(obj_name)
                         btn.setText("")

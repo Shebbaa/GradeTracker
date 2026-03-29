@@ -7,25 +7,18 @@ Supabase: таблица profiles и операции для логина, ли�
 """
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-# ─── Подставьте свои значения при необходимости (env имеют приоритет) ───
-_DEFAULT_URL = ""
-_DEFAULT_KEY = ""
-
-
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
+from modules.secure_storage import get_supabase_url, get_supabase_key
 
 
 def get_supabase_client():  # lazy import
     from supabase import create_client
 
-    url = _env("INFERNO_SUPABASE_URL", _DEFAULT_URL)
-    key = _env("INFERNO_SUPABASE_KEY", _DEFAULT_KEY)
+    url = get_supabase_url()
+    key = get_supabase_key()
     if not url or not key:
         return None
     return create_client(url, key)

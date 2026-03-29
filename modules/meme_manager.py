@@ -3,14 +3,26 @@ from __future__ import annotations
 """
 Inferno Grade Tracker — Meme Manager
 Загружает мемы/фотожабы из /assets/memes и /assets/custom_teacher.
-Поддерживает PNG, JPG, GIF.
+Поддерживает как обычные файлы (PNG, JPG, GIF), так и зашифрованные (.enc).
 """
 
 import random
 from pathlib import Path
 from modules.config import MEMES_DIR, CUSTOM_DIR
 
+# Обычные расширения + зашифрованные варианты
 SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+SUPPORTED_EXT_ENC = {ext + ".enc" for ext in SUPPORTED_EXT}
+ALL_SUPPORTED = SUPPORTED_EXT | SUPPORTED_EXT_ENC
+
+
+def _match_ext(filename: str) -> bool:
+    """Проверка расширения с учётом двойных (.png.enc)."""
+    lower = filename.lower()
+    for ext in ALL_SUPPORTED:
+        if lower.endswith(ext):
+            return True
+    return False
 
 
 class MemeManager:
@@ -39,7 +51,7 @@ class MemeManager:
             return []
         return [
             str(f) for f in path.iterdir()
-            if f.is_file() and f.suffix.lower() in SUPPORTED_EXT
+            if f.is_file() and _match_ext(f.name)
         ]
 
     @property

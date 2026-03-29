@@ -1,7 +1,7 @@
 """
 Inferno Grade Tracker — Sound Manager
 Воспроизведение звуковых эффектов (демонический смех, взрывы, фразы).
-Использует QSoundEffect из PyQt6 или pygame.mixer как фоллбэк.
+Поддерживает как обычные аудио, так и зашифрованные .enc файлы.
 """
 
 import random
@@ -15,8 +15,27 @@ except ImportError:
     _HAS_MULTIMEDIA = False
 
 from modules.config import SOUNDS_DIR
+from modules.asset_loader import load_audio_buffer
 
 SUPPORTED_AUDIO = {".wav", ".mp3", ".ogg"}
+SUPPORTED_AUDIO_ENC = {ext + ".enc" for ext in SUPPORTED_AUDIO}
+ALL_AUDIO = SUPPORTED_AUDIO | SUPPORTED_AUDIO_ENC
+
+
+def _is_audio_file(f: Path) -> bool:
+    name = f.name.lower()
+    for ext in ALL_AUDIO:
+        if name.endswith(ext):
+            return True
+    return False
+
+
+def _stem_for_category(f: Path) -> str:
+    """Получить имя файла без расширений (.enc и аудио)."""
+    name = f.stem  # убирает последнее расширение
+    if f.suffix.lower() == ".enc":
+        name = Path(name).stem  # убираем ещё одно (.mp3)
+    return name.lower()
 
 
 class SoundManager:
@@ -29,6 +48,7 @@ class SoundManager:
         self._sounds_root = SOUNDS_DIR
         self._player = None
         self._audio_output = None
+        self._current_buffer = None  # ссылка на QBuffer чтобы GC не убил
         self._scan_sounds()
         self._init_player()
 
@@ -44,11 +64,10 @@ class SoundManager:
             return
         self._all_files = [
             f for f in self._sounds_root.iterdir()
-            if f.is_file() and f.suffix.lower() in SUPPORTED_AUDIO
+            if f.is_file() and _is_audio_file(f)
         ]
-        # Категоризация по имени файла
         for f in self._all_files:
-            name = f.stem.lower()
+            name = _stem_for_category(f)
             if "laugh" in name or "смех" in name:
                 self._sounds.setdefault("laugh", []).append(str(f))
             elif "explosion" in name or "взрыв" in name or "boom" in name:
@@ -104,8 +123,19 @@ class SoundManager:
         if not _HAS_MULTIMEDIA or self._player is None:
             return
         try:
-            self._player.setSource(QUrl.fromLocalFile(path))
-            self._player.play()
+            p = Path(path)
+            if p.suffix.lower() == ".enc":
+                # Зашифрованный файл — расшифровываем в память
+                buf = load_audio_buffer(p)
+                if buf:
+                    self._current_buffer = buf  # prevent GC
+                    self._player.setSourceDevice(buf)
+                    self._player.play()
+            else:
+                # Обычный файл
+                self._current_buffer = None
+                self._player.setSource(QUrl.fromLocalFile(path))
+                self._player.play()
         except Exception:
             pass
 
