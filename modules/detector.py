@@ -35,7 +35,6 @@ class GradeDetector(QObject):
         self._interval_ms = 1000
 
         self._mss = None
-        self._cv2 = None
 
     def _ensure_imports(self):
         if self._mss is None:
@@ -44,12 +43,6 @@ class GradeDetector(QObject):
                 self._mss = mss
             except ImportError:
                 print("[DETECTOR] ОШИБКА: pip install mss")
-        if self._cv2 is None:
-            try:
-                import cv2
-                self._cv2 = cv2
-            except ImportError:
-                print("[DETECTOR] ОШИБКА: pip install opencv-python")
 
     # ═══ Настройки ═══════════════════════════════════════════════════════
     def set_zone(self, x: int, y: int, w: int, h: int):
@@ -94,7 +87,7 @@ class GradeDetector(QObject):
         if not self._target_hsv:
             print("[DETECTOR] Цвет не задан!")
             return False
-        if not self._mss or not self._cv2:
+        if not self._mss:
             print("[DETECTOR] Зависимости не установлены!")
             return False
         self._active = True
@@ -138,6 +131,33 @@ class GradeDetector(QObject):
 
         self._prev_detected = detected
 
+    # ═══ BGR→HSV на чистом numpy (без OpenCV) ════════════════════════════
+    @staticmethod
+    def _bgr_to_hsv(bgr: np.ndarray) -> np.ndarray:
+        """Конвертация BGR→HSV (OpenCV-совместимые диапазоны: H 0-179, S/V 0-255)."""
+        img = bgr.astype(np.float32) / 255.0
+        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+
+        mx = np.maximum(np.maximum(r, g), b)
+        mn = np.minimum(np.minimum(r, g), b)
+        d = mx - mn
+
+        # Hue
+        h = np.zeros_like(mx)
+        mask_r = (mx == r) & (d > 0)
+        mask_g = (mx == g) & (d > 0)
+        mask_b = (mx == b) & (d > 0)
+        h[mask_r] = 60.0 * (((g[mask_r] - b[mask_r]) / d[mask_r]) % 6)
+        h[mask_g] = 60.0 * (((b[mask_g] - r[mask_g]) / d[mask_g]) + 2)
+        h[mask_b] = 60.0 * (((r[mask_b] - g[mask_b]) / d[mask_b]) + 4)
+
+        # Saturation
+        s = np.where(mx > 0, d / mx, 0)
+
+        # Собираем HSV: H/2 (0-179), S*255, V*255
+        hsv = np.stack([h / 2.0, s * 255.0, mx * 255.0], axis=-1)
+        return hsv.astype(np.uint8)
+
     # ═══ Замер цвета ═════════════════════════════════════════════════════
     def _measure_color_ratio(self) -> float:
         z = self._zone
@@ -150,26 +170,20 @@ class GradeDetector(QObject):
             img = np.array(sct.grab(monitor))
 
         bgr = img[:, :, :3]
-        hsv = self._cv2.cvtColor(bgr, self._cv2.COLOR_BGR2HSV)
+        hsv = self._bgr_to_hsv(bgr)
 
         h, s, v = self._target_hsv
         t = self._tolerance
 
-        # H в OpenCV: 0-179, S и V: 0-255
-        # H tolerance уже (цвет меняется быстро)
-        lower = np.array([
-            max(0, h - max(t // 4, 5)),
-            max(0, s - t),
-            max(0, v - t),
-        ], dtype=np.uint8)
+        h_lo = max(0, h - max(t // 4, 5))
+        h_hi = min(179, h + max(t // 4, 5))
+        s_lo = max(0, s - t)
+        s_hi = min(255, s + t)
+        v_lo = max(0, v - t)
+        v_hi = min(255, v + t)
 
-        upper = np.array([
-            min(179, h + max(t // 4, 5)),
-            min(255, s + t),
-            min(255, v + t),
-        ], dtype=np.uint8)
-
-        mask = self._cv2.inRange(hsv, lower, upper)
+        hc, sc, vc = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        mask = (hc >= h_lo) & (hc <= h_hi) & (sc >= s_lo) & (sc <= s_hi) & (vc >= v_lo) & (vc <= v_hi)
         matching = np.count_nonzero(mask)
         total = mask.size
         return matching / total if total > 0 else 0.0

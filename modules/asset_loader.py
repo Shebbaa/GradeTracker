@@ -84,6 +84,11 @@ def load_movie(path: str | Path) -> QMovie | None:
     return movie if movie.isValid() else None
 
 
+def _audio_mime(suffix: str) -> str:
+    """MIME-тип для аудиоформата."""
+    return {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg"}.get(suffix, "")
+
+
 def load_audio_buffer(path: str | Path) -> QBuffer | None:
     """
     Расшифровать аудиофайл в QBuffer для QMediaPlayer.
@@ -97,10 +102,39 @@ def load_audio_buffer(path: str | Path) -> QBuffer | None:
         ba = QByteArray(raw)
         buf = QBuffer(ba)
         buf.open(QIODevice.OpenModeFlag.ReadOnly)
-        # Привязываем данные чтобы GC не убил
         buf._inferno_data = ba
+        buf._inferno_mime = _audio_mime(_original_suffix(p))
         return buf
-    return None  # для незашифрованных файлов вызывающий использует fromLocalFile
+    return None
+
+
+def decrypt_audio_to_temp(path: str | Path) -> str | None:
+    """
+    Расшифровать .enc аудио во временный файл в AppData/InfernoTracker/tmp/.
+    Возвращает путь к расшифрованному файлу.
+    Используется как fallback если QMediaPlayer не воспроизводит из буфера.
+    """
+    p = Path(path)
+    if not _is_encrypted(p):
+        return str(p) if p.exists() else None
+
+    from modules.app_paths import APP_DATA_DIR
+    tmp_dir = APP_DATA_DIR / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Имя: hash от пути, с оригинальным расширением
+    import hashlib
+    name_hash = hashlib.md5(str(p).encode()).hexdigest()[:12]
+    orig_ext = _original_suffix(p)  # e.g. ".mp3"
+    tmp_file = tmp_dir / f"{name_hash}{orig_ext}"
+
+    # Кэшируем: если уже расшифрован и размер совпадает — не трогаем
+    if tmp_file.exists() and tmp_file.stat().st_size > 0:
+        return str(tmp_file)
+
+    raw = decrypt_bytes(p.read_bytes())
+    tmp_file.write_bytes(raw)
+    return str(tmp_file)
 
 
 def is_gif(path: str | Path) -> bool:

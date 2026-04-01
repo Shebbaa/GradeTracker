@@ -9,7 +9,6 @@ ColorPicker: кликаешь по ГОЛУБОМУ ФОНУ выбранной 
 Детектор следит за зоной: голубой появился = двойка выбрана.
 """
 
-import numpy as np
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QCursor
@@ -195,23 +194,17 @@ class ColorPicker(QWidget):
         c = QColor(img.pixel(x, y))
         r, g, b = c.red(), c.green(), c.blue()
 
-        try:
-            import cv2
-            pixel = np.uint8([[[b, g, r]]])
-            hsv = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV)
-            return [int(hsv[0][0][0]), int(hsv[0][0][1]), int(hsv[0][0][2])]
-        except ImportError:
-            r_, g_, b_ = r / 255.0, g / 255.0, b / 255.0
-            mx, mn = max(r_, g_, b_), min(r_, g_, b_)
-            d = mx - mn
-            if d == 0:
-                h = 0
-            elif mx == r_:
-                h = 60 * (((g_ - b_) / d) % 6)
-            elif mx == g_:
-                h = 60 * (((b_ - r_) / d) + 2)
-            else:
-                h = 60 * (((r_ - g_) / d) + 4)
-            s = 0 if mx == 0 else (d / mx) * 255
-            v = mx * 255
-            return [int(h / 2), int(s), int(v)]
+        r_, g_, b_ = r / 255.0, g / 255.0, b / 255.0
+        mx, mn = max(r_, g_, b_), min(r_, g_, b_)
+        d = mx - mn
+        if d == 0:
+            h = 0
+        elif mx == r_:
+            h = 60 * (((g_ - b_) / d) % 6)
+        elif mx == g_:
+            h = 60 * (((b_ - r_) / d) + 2)
+        else:
+            h = 60 * (((r_ - g_) / d) + 4)
+        s = 0 if mx == 0 else (d / mx) * 255
+        v = mx * 255
+        return [int(h / 2), int(s), int(v)]
