@@ -5,7 +5,11 @@
 /screenshots
 /users.json
 /__pycache__
+/build
+/dist
 
 inferno.db
 inferno.db-shm
 inferno.db-wal
+InfernoGradeTracker.exe
+__init__.cpython-313.pyc
