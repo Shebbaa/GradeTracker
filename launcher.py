@@ -917,12 +917,15 @@ class LauncherWindow(QWidget):
             target = APP_EXE_PATH
             flags  = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             if target.exists() and target.resolve() != Path(sys.executable).resolve():
+                # Отдельный exe — запускаем как процесс
                 subprocess.Popen([str(target), "--launched-by-launcher"],
                                  creationflags=flags)
+                QTimer.singleShot(400, QApplication.quit)
             else:
-                # Лаунчер == основное приложение в одном exe
-                subprocess.Popen([sys.executable, "--launched-by-launcher"],
-                                 creationflags=flags)
+                # Лаунчер == основное приложение в одном exe (монолит).
+                # Запускаем main.py в том же процессе, иначе — бесконечный цикл.
+                QApplication.quit()
+                self._run_main_inprocess()
         else:
             # Режим разработки — запускаем main.py напрямую
             main_py = BASE_DIR / "main.py"
@@ -930,17 +933,84 @@ class LauncherWindow(QWidget):
                 [sys.executable, str(main_py), "--launched-by-launcher"],
                 cwd=str(BASE_DIR),
             )
+            QTimer.singleShot(400, QApplication.quit)
 
-        QTimer.singleShot(400, QApplication.quit)
+    @staticmethod
+    def _run_main_inprocess():
+        """Запускает основное приложение в том же процессе (монолитный exe)."""
+        sys.argv = [sys.argv[0], "--launched-by-launcher"]
+        main_py = BASE_DIR / "main.py"
+        if main_py.exists():
+            # Исполняем main.py в текущем интерпретаторе
+            spec = {"__name__": "__main__", "__file__": str(main_py)}
+            exec(compile(main_py.read_text(encoding="utf-8"), str(main_py), "exec"), spec)
+        else:
+            # Если main.py вкомпилирован — импортируем модуль
+            from main import main as run_main
+            run_main()
 
 
 # ════════════════════════════════════════════════════════════════════
 #  Entry point
 # ════════════════════════════════════════════════════════════════════
+def _check_windows_security():
+    """
+    Проверяем типичные проблемы с безопасностью Windows:
+    - SmartScreen / Mark-of-the-Web (файл скачан из интернета)
+    - Запуск из защищённых директорий
+    Показываем предупреждение если нужно.
+    """
+    if sys.platform != "win32":
+        return
+
+    exe = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
+
+    # Проверяем Zone.Identifier (Mark-of-the-Web) — признак скачанного файла
+    zone_file = Path(str(exe) + ":Zone.Identifier")
+    has_motw = False
+    try:
+        # Читаем ADS (Alternate Data Stream)
+        if zone_file.exists():
+            has_motw = True
+    except Exception:
+        pass
+
+    # Также проверяем через ctypes — есть ли блокировка
+    if not has_motw:
+        try:
+            import ctypes
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(exe))
+            # Если файл вообще не читается — возможно заблокирован
+            if attrs == -1:  # INVALID_FILE_ATTRIBUTES
+                has_motw = True
+        except Exception:
+            pass
+
+    if has_motw:
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox()
+        msg.setWindowTitle("Inferno — Предупреждение безопасности")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(
+            "⚠️ Windows SmartScreen может заблокировать запуск.\n\n"
+            "Это нормально для неподписанных программ.\n\n"
+            "Чтобы разблокировать:\n"
+            "1. Правой кнопкой по .exe → Свойства\n"
+            "2. Внизу поставьте галочку «Разблокировать»\n"
+            "3. Нажмите «Применить» → «ОК»\n\n"
+            "Или: при появлении SmartScreen нажмите\n"
+            "«Подробнее» → «Выполнить в любом случае»"
+        )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Inferno Launcher")
     app.setQuitOnLastWindowClosed(True)
+
+    _check_windows_security()
 
     win = LauncherWindow()
     win.show()

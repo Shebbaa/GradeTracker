@@ -15,8 +15,18 @@ Inferno Grade Tracker — Pre-build Asset Encryptor
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from pathlib import Path
+
+# Fix encoding for Windows console with Cyrillic filenames
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Используем тот же ключ, что и приложение
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,13 +34,14 @@ from modules.secure_storage import encrypt_bytes, decrypt_bytes
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
-# Расширения медиа-файлов, которые шифруем
+# Расширения медиа-файлов, которые шифруем (только визуал — звуки НЕ шифруем,
+# т.к. QMediaPlayer не воспроизводит MP3 из буфера без demuxer-хинтов)
 MEDIA_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",  # Изображения
-    ".mp3", ".wav", ".ogg",                              # Звуки
     ".mp4", ".avi", ".mkv", ".webm",                     # Видео
     ".ico",                                               # Иконки
 }
+# Звуки остаются plain: ".mp3", ".wav", ".ogg"
 
 
 def encrypt_assets(assets_dir: Path) -> int:

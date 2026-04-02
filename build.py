@@ -63,6 +63,9 @@ def main():
         # Включаем папку assets (с .enc файлами) внутрь exe
         "--include-data-dir=assets=assets",
 
+        # Включаем main.py для запуска из лаунчера в монолитном режиме
+        "--include-data-files=main.py=main.py",
+
         # Плагины
         "--enable-plugin=pyqt6",
 
@@ -73,22 +76,20 @@ def main():
         "--include-package=realtime",
         "--include-package=storage3",
 
-        # Hidden imports
+        # Hidden imports (cv2 заменён на чистый numpy — экономия ~400МБ)
         "--include-module=PyQt6.QtMultimedia",
-        "--include-module=cv2",
         "--include-module=mss",
         "--include-module=numpy",
         "--include-module=pynput",
         "--include-module=pynput.keyboard._win32",
-        "--include-module=pynput.mouse._win32",
         "--include-module=keyboard",
 
         # Оптимизация
         "--assume-yes-for-downloads",
         "--remove-output",
 
-        # Точка входа
-        "main.py",
+        # Точка входа — лаунчер (включает main.py в монолите)
+        "launcher.py",
     ]
 
     run(nuitka_cmd, "Шаг 2/2: Сборка Nuitka (это займёт несколько минут)...")
