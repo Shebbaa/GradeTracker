@@ -1,5 +1,4 @@
--- Inferno Grade Tracker: реферальная система «Вербовщик Палачей»
--- Выполни в SQL Editor проекта Supabase (PostgreSQL).
+--tets
 
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referral_code text;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS referred_by uuid REFERENCES profiles(id);
